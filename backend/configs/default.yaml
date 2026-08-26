@@ -1,0 +1,14 @@
+app:
+  env: development
+  name: Muggle
+
+log:
+  level: debug
+
+http:
+  addr: ":8080"
+  read_header_timeout: 5s
+  read_timeout: 10s
+  write_timeout: 15s
+  idle_timeout: 60s
+  shutdown_timeout: 10s

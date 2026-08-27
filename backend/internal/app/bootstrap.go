@@ -12,6 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/psking307/Muggle/backend/internal/config"
 	"github.com/psking307/Muggle/backend/internal/httpapi"
+	"github.com/psking307/Muggle/backend/internal/platform/database"
+	"github.com/psking307/Muggle/backend/internal/post"
 	"go.uber.org/zap"
 )
 
@@ -29,11 +31,38 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 		gin.SetMode(gin.DebugMode)
 	}
 
+	// 阶段二开始，MySQL 是公开文章 API 的必要依赖。
+	// 启动时完成连接与 Ping，配置错误或数据库不可用会立即阻止 API 启动。
+	db, sqlDB, err := database.Open(cfg.MySQL)
+	if err != nil {
+		return fmt.Errorf("initialize MySQL: %w", err)
+	}
+	defer func() {
+		if err := sqlDB.Close(); err != nil {
+			log.Error("failed to close MySQL", zap.Error(err))
+		}
+	}()
+
+	// 按 Repository -> Service -> Handler 的方向组装文章业务依赖。
+	postRepository := post.NewGORMRepository(db)
+	postService := post.NewService(postRepository)
+	postHandler := post.NewHandler(postService, log)
+
+	// Router 先安装全局中间件和 live，再由各业务模块注册自己的路由。
+	router := httpapi.NewRouter(log)
+	if cfg.App.Env == "development" {
+		// Swagger 只在开发环境开放，避免生产环境默认暴露内部契约页面。
+		httpapi.RegisterSwagger(router)
+	}
+	apiV1 := router.Group("/api/v1")
+	httpapi.RegisterReadyRoute(apiV1, sqlDB)
+	post.RegisterPublicRoutes(apiV1, postHandler)
+
 	// 使用显式 http.Server，而不是 router.Run。
 	// 这样可以为不同请求阶段设置超时，防止慢客户端长期占用连接资源。
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           httpapi.NewRouter(log),
+		Handler:           router,
 		ReadHeaderTimeout: cfg.HTTP.ReadHeaderTimeout,
 		ReadTimeout:       cfg.HTTP.ReadTimeout,
 		WriteTimeout:      cfg.HTTP.WriteTimeout,

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"runtime/debug"
 
@@ -37,8 +38,9 @@ func Recovery(log *zap.Logger) gin.HandlerFunc {
 				// 如果还没有向客户端写过内容，就可以安全地返回完整的统一 500 JSON。
 				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 					"error": gin.H{
-						"code":    "internal_error",
-						"message": "internal server error",
+						"code":       "internal_error",
+						"message":    "internal server error",
+						"request_id": fmt.Sprint(requestID),
 					},
 				})
 				return

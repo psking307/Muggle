@@ -43,12 +43,17 @@ func TestLive(t *testing.T) {
 func TestNotFound(t *testing.T) {
 	router := newTestRouter()
 	request := httptest.NewRequest(http.MethodGet, "/does-not-exist", nil)
+	request.Header.Set("X-Request-ID", "test-not-found")
 	response := httptest.NewRecorder()
 
 	router.ServeHTTP(response, request)
 
 	require.Equal(t, http.StatusNotFound, response.Code)
-	assert.JSONEq(t, `{"error":{"code":"not_found","message":"resource not found"}}`, response.Body.String())
+	assert.JSONEq(
+		t,
+		`{"error":{"code":"not_found","message":"resource not found","request_id":"test-not-found"}}`,
+		response.Body.String(),
+	)
 }
 
 // TestRecovery 验证处理函数发生 panic 时，服务会返回统一 500，而不是让 panic 逃出路由器。
@@ -61,11 +66,16 @@ func TestRecovery(t *testing.T) {
 	})
 
 	request := httptest.NewRequest(http.MethodGet, "/panic", nil)
+	request.Header.Set("X-Request-ID", "test-recovery")
 	response := httptest.NewRecorder()
 
 	// Recovery 中间件应在 ServeHTTP 内部捕获 panic，所以测试能够继续执行下面的断言。
 	router.ServeHTTP(response, request)
 
 	require.Equal(t, http.StatusInternalServerError, response.Code)
-	assert.JSONEq(t, `{"error":{"code":"internal_error","message":"internal server error"}}`, response.Body.String())
+	assert.JSONEq(
+		t,
+		`{"error":{"code":"internal_error","message":"internal server error","request_id":"test-recovery"}}`,
+		response.Body.String(),
+	)
 }

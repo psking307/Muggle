@@ -1,4 +1,9 @@
 // Package main 提供 Muggle API 进程的启动入口。
+//
+// @title Muggle API
+// @version 0.2.0
+// @description Muggle Tiny Blog 阶段二公开文章 API。
+// @BasePath /api/v1
 package main
 
 import (

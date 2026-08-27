@@ -1,0 +1,181 @@
+basePath: /api/v1
+definitions:
+  httpapi.LiveResponse:
+    properties:
+      status:
+        type: string
+    type: object
+  httpapi.ReadyChecks:
+    properties:
+      mysql:
+        type: string
+    type: object
+  httpapi.ReadyResponse:
+    properties:
+      checks:
+        $ref: '#/definitions/httpapi.ReadyChecks'
+      status:
+        type: string
+    type: object
+  post.DetailResponse:
+    properties:
+      data:
+        $ref: '#/definitions/post.PublicDetail'
+    type: object
+  post.ListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/post.PublicListItem'
+        type: array
+      meta:
+        $ref: '#/definitions/post.PageMeta'
+    type: object
+  post.PageMeta:
+    properties:
+      page:
+        type: integer
+      page_size:
+        type: integer
+      total:
+        type: integer
+    type: object
+  post.PublicDetail:
+    properties:
+      content_md:
+        type: string
+      id:
+        type: integer
+      published_at:
+        type: string
+      slug:
+        type: string
+      summary:
+        type: string
+      title:
+        type: string
+    type: object
+  post.PublicListItem:
+    properties:
+      id:
+        type: integer
+      published_at:
+        type: string
+      slug:
+        type: string
+      summary:
+        type: string
+      title:
+        type: string
+    type: object
+  response.APIError:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+      request_id:
+        type: string
+    type: object
+  response.ErrorResponse:
+    properties:
+      error:
+        $ref: '#/definitions/response.APIError'
+    type: object
+info:
+  contact: {}
+  description: Muggle Tiny Blog 阶段二公开文章 API。
+  title: Muggle API
+  version: 0.2.0
+paths:
+  /health/live:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httpapi.LiveResponse'
+      summary: 检查 API 进程是否存活
+      tags:
+      - health
+  /health/ready:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/httpapi.ReadyResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/httpapi.ReadyResponse'
+      summary: 检查 API 是否可以访问必要的 MySQL
+      tags:
+      - health
+  /posts:
+    get:
+      parameters:
+      - description: 页码，默认 1
+        in: query
+        minimum: 1
+        name: page
+        type: integer
+      - description: 每页数量，默认 10
+        in: query
+        maximum: 100
+        minimum: 1
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/post.ListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: 获取公开文章列表
+      tags:
+      - public-posts
+  /posts/{slug}:
+    get:
+      parameters:
+      - description: 文章 slug
+        in: path
+        name: slug
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/post.DetailResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      summary: 根据 slug 获取公开文章
+      tags:
+      - public-posts
+swagger: "2.0"

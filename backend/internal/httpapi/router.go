@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/psking307/Muggle/backend/internal/httpapi/middleware"
+	"github.com/psking307/Muggle/backend/internal/httpapi/response"
 	"go.uber.org/zap"
 )
 
@@ -34,17 +35,8 @@ func NewRouter(log *zap.Logger) *gin.Engine {
 
 	// NoRoute 处理所有没有匹配到已注册路由的请求，也就是常见的 404。
 	router.NoRoute(func(c *gin.Context) {
-		// error_code 会被 AccessLog 读取并写入日志，方便按错误类型检索请求。
-		c.Set("error_code", "not_found")
-
-		// 对外返回稳定的错误结构。客户端可以读取 error.code 做程序判断，
-		// message 则主要用于让开发者或用户理解错误。
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": gin.H{
-				"code":    "not_found",
-				"message": "resource not found",
-			},
-		})
+		// 未匹配路由也使用阶段二统一错误结构，并带上 Request ID。
+		response.Error(c, http.StatusNotFound, "not_found", "resource not found")
 	})
 
 	return router

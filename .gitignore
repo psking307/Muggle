@@ -1,6 +1,9 @@
 .env
 *.log
 
+# 设计文档只保留在本地，不进入版本库。
+Muggle-design.md
+
 backend/bin/
 
 frontend/node_modules/

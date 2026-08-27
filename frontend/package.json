@@ -12,9 +12,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@bytemd/plugin-gfm": "^1.22.0",
+    "@bytemd/plugin-highlight": "^1.22.0",
+    "@bytemd/react": "^1.22.0",
     "@tailwindcss/vite": "^4.3.3",
     "antd": "^6.6.1",
     "axios": "^1.19.0",
+    "bytemd": "^1.22.0",
+    "highlight.js": "^11.12.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router": "^8.3.0",

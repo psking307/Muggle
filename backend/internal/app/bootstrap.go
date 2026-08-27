@@ -46,9 +46,12 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 	}()
 
 	// 按 Repository -> Service -> Handler 的方向组装文章业务依赖。
+	// postService 同时实现公开读（PublicService）与管理写（AdminService）两个接口，
+	// 因此下面分别构造公开 Handler 与管理 Handler，共用同一个 Service 与连接池。
 	postRepository := post.NewGORMRepository(db)
 	postService := post.NewService(postRepository)
 	postHandler := post.NewHandler(postService, log)
+	postAdminHandler := post.NewAdminHandler(postService, log)
 
 	// 阶段三：组装管理员认证依赖链。
 	// adminRepository 与 postRepository 共用同一个 GORM 连接池。
@@ -87,6 +90,13 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 	admin.RegisterRoutes(
 		apiV1,
 		adminHandler,
+		middleware.BearerAuth(cfg.Auth.JWTSecret),
+	)
+
+	// 阶段四：注册管理端文章接口，复用同一个 BearerAuth 中间件。
+	post.RegisterAdminRoutes(
+		apiV1,
+		postAdminHandler,
 		middleware.BearerAuth(cfg.Auth.JWTSecret),
 	)
 

@@ -49,6 +49,77 @@ definitions:
       status:
         type: string
     type: object
+  post.AdminPostDetail:
+    properties:
+      content_md:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: integer
+      published_at:
+        description: 草稿为 null，已发布为首次发布时间
+        type: string
+      slug:
+        type: string
+      status:
+        $ref: '#/definitions/post.Status'
+      summary:
+        type: string
+      title:
+        type: string
+      updated_at:
+        type: string
+      version:
+        type: integer
+    type: object
+  post.AdminPostDetailResponse:
+    properties:
+      data:
+        $ref: '#/definitions/post.AdminPostDetail'
+    type: object
+  post.AdminPostListItem:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: integer
+      published_at:
+        description: 草稿为 null，已发布为首次发布时间
+        type: string
+      slug:
+        type: string
+      status:
+        $ref: '#/definitions/post.Status'
+      summary:
+        type: string
+      title:
+        type: string
+      updated_at:
+        type: string
+      version:
+        type: integer
+    type: object
+  post.AdminPostListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/post.AdminPostListItem'
+        type: array
+      meta:
+        $ref: '#/definitions/post.PageMeta'
+    type: object
+  post.CreatePostRequest:
+    properties:
+      content_md:
+        type: string
+      slug:
+        type: string
+      summary:
+        type: string
+      title:
+        type: string
+    type: object
   post.DetailResponse:
     properties:
       data:
@@ -100,6 +171,32 @@ definitions:
       title:
         type: string
     type: object
+  post.Status:
+    enum:
+    - draft
+    - published
+    type: string
+    x-enum-varnames:
+    - StatusDraft
+    - StatusPublished
+  post.UpdatePostRequest:
+    properties:
+      content_md:
+        type: string
+      slug:
+        type: string
+      summary:
+        type: string
+      title:
+        type: string
+      version:
+        type: integer
+    type: object
+  post.VersionRequest:
+    properties:
+      version:
+        type: integer
+    type: object
   response.APIError:
     properties:
       code:
@@ -116,9 +213,9 @@ definitions:
     type: object
 info:
   contact: {}
-  description: Muggle Tiny Blog 阶段三 API：公开文章读取 + 管理员认证与会话。
+  description: Muggle Tiny Blog 阶段四 API：公开文章读取 + 管理员认证与会话 + 管理端写作与发布闭环。
   title: Muggle API
-  version: 0.3.0
+  version: 0.4.0
 paths:
   /admin/me:
     get:
@@ -142,6 +239,267 @@ paths:
       summary: 获取当前管理员摘要
       tags:
       - admin-auth
+  /admin/posts:
+    get:
+      description: 返回草稿和已发布文章（不含正文），供管理后台列表使用。
+      parameters:
+      - description: 页码，默认 1
+        in: query
+        minimum: 1
+        name: page
+        type: integer
+      - description: 每页数量，默认 10
+        in: query
+        maximum: 100
+        minimum: 1
+        name: page_size
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/post.AdminPostListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 管理端文章列表
+      tags:
+      - admin-posts
+    post:
+      consumes:
+      - application/json
+      description: 创建一篇新草稿；新文章只能以 draft 状态创建。
+      parameters:
+      - description: 标题、slug、摘要与 Markdown 正文
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/post.CreatePostRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/post.AdminPostDetailResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 创建草稿
+      tags:
+      - admin-posts
+  /admin/posts/{id}:
+    get:
+      description: 返回文章的完整内容（含 Markdown 正文），供编辑页回填。
+      parameters:
+      - description: 文章 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/post.AdminPostDetailResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 管理端文章详情
+      tags:
+      - admin-posts
+    put:
+      consumes:
+      - application/json
+      description: 更新文章的可编辑字段并校验 version（乐观锁）；发布后的文章 slug 不可修改。
+      parameters:
+      - description: 文章 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 可编辑字段与 version
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/post.UpdatePostRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/post.AdminPostDetailResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 修改文章
+      tags:
+      - admin-posts
+  /admin/posts/{id}/publish:
+    post:
+      consumes:
+      - application/json
+      description: 把草稿发布为公开可见；首次发布写入 published_at，取消后再发布不重置。
+      parameters:
+      - description: 文章 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 当前 version
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/post.VersionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/post.AdminPostDetailResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 发布文章
+      tags:
+      - admin-posts
+  /admin/posts/{id}/unpublish:
+    post:
+      consumes:
+      - application/json
+      description: 把已发布文章下线为草稿，保留 published_at；v1.0 不提供删除，用取消发布下线文章。
+      parameters:
+      - description: 文章 ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 当前 version
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/post.VersionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/post.AdminPostDetailResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/response.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: 取消发布
+      tags:
+      - admin-posts
   /admin/session:
     delete:
       description: 撤销当前 Refresh Session 并清除 Refresh Cookie。

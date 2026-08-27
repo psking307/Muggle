@@ -12,3 +12,6 @@ frontend/dist/
 .idea/
 .vscode/
 .DS_Store
+
+# WorkBuddy 工作区本地数据（记忆、技能等），只属于本机，不进入版本库。
+.workbuddy/

@@ -19,6 +19,22 @@ Object.defineProperty(window, "matchMedia", {
   })),
 });
 
+// jsdom 同样没有实现 ResizeObserver，而 Ant Design 的 Table、Form 等组件
+// 会调用它来监听尺寸变化。这里提供一个什么都不做的最小实现，
+// 避免测试运行时抛出 "ResizeObserver is not defined"。
+if (typeof globalThis.ResizeObserver === "undefined") {
+  class ResizeObserverStub {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+  Object.defineProperty(globalThis, "ResizeObserver", {
+    writable: true,
+    configurable: true,
+    value: ResizeObserverStub,
+  });
+}
+
 // 每个测试结束后卸载 React 组件，避免上一个测试的 DOM 污染下一个测试。
 afterEach(() => {
   cleanup();

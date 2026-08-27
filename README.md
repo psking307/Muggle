@@ -1,6 +1,6 @@
 # Muggle Tiny Blog
 
-Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶段 3：在公开文章读取之上，实现了管理员安全登录、Access JWT、Refresh Session 轮转、登录恢复与退出。
+Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶段 4：在认证与公开读取之上，实现了从登录、创建草稿、ByteMD 编辑、发布到公开阅读、取消发布的完整写作闭环。
 
 ## 阶段 2 已实现
 
@@ -31,6 +31,19 @@ Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶�
 - 生产环境配置校验：拒绝弱 JWT 密钥、示例密钥、通配来源与非 Secure Cookie。
 - 覆盖错误密码、禁用账号、过期/伪造 JWT、轮转、重放、退出的自动化测试。
 
+## 阶段 4 已实现
+
+- 管理端文章列表、详情、创建草稿、更新、发布、取消发布接口（全部需要 Bearer Token）。
+- 新文章只能以 `draft` 创建；发布写入 `published_at`，取消发布保留该时间，再次发布不重置。
+- 显式字段更新（不用整对象 Save）；`WHERE id = ? AND version = ?` 实现乐观锁，旧版本保存返回 409。
+- 允许的状态流转仅 `draft <-> published`；已发布文章的 slug 锁定，草稿阶段可修改。
+- 前端引入 ByteMD（GFM + 代码高亮 + 中文 locale）做 Markdown 编辑与预览。
+- Markdown 安全：禁用原始 HTML、链接/图片协议白名单、渲染结果经 rehype-sanitize 清洗。
+- 管理后台顶部导航布局：文章管理列表、新建、编辑页面，处理 401/404/409/保存中/发布中。
+- 补齐 Service / Handler / Repository 集成测试与前端页面测试。
+
+阶段 4 不包含 Redis、Kafka 与 Worker；这些属于后续阶段。
+
 ## 环境要求
 
 在 WSL Ubuntu 中准备 Go、Node.js、npm、Git、Make，以及开启 WSL Integration 的 Docker Desktop。项目位于：
@@ -58,7 +71,7 @@ cd frontend && npm install && cd ..
 
 根 Makefile 会把仓库根目录的 `.env` 注入 Go 进程和 Docker Compose。
 
-## 从零启动阶段 3
+## 从零启动阶段 4
 
 在仓库根目录依次运行：
 
@@ -80,7 +93,7 @@ make dev-web     # 启动网页：http://localhost:5173
 可访问地址：
 
 - 文章列表：`http://localhost:5173/`
-- 管理登录：`http://localhost:5173/admin/login`（登录后进入 `/admin`）
+- 管理登录：`http://localhost:5173/admin/login`（登录后进入 `/admin/posts` 文章管理）
 - 健康页：`http://localhost:5173/health`
 - Swagger UI：`http://localhost:8080/swagger/index.html`
 
@@ -117,6 +130,13 @@ POST   /api/v1/admin/session           # 登录：返回 Access Token，设置 R
 POST   /api/v1/admin/session/refresh   # 轮转会话：旧 Refresh Token 立即失效
 DELETE /api/v1/admin/session           # 退出：撤销会话并清除 Cookie
 GET    /api/v1/admin/me                # 当前管理员摘要（需要 Bearer Token）
+
+GET    /api/v1/admin/posts             # 管理端文章列表（草稿 + 已发布）
+GET    /api/v1/admin/posts/:id         # 编辑页完整内容
+POST   /api/v1/admin/posts             # 创建草稿（201）
+PUT    /api/v1/admin/posts/:id         # 更新文章（校验 version 乐观锁）
+POST   /api/v1/admin/posts/:id/publish    # 发布
+POST   /api/v1/admin/posts/:id/unpublish  # 取消发布
 ```
 
 除登录和 Refresh 外，管理 API 使用 `Authorization: Bearer <access-token>`；Refresh 与退出接口还会校验 `Origin` 请求头必须等于 `PUBLIC_ORIGIN`。
@@ -171,6 +191,30 @@ curl -i -X DELETE http://localhost:8080/api/v1/admin/session \
   -H 'Origin: http://localhost:5173' -b /tmp/cookies.txt
 ```
 
+管理端写作闭环验收（登录后拿到的 Token 与 Cookie 只在本次实验使用）：
+
+```bash
+TOKEN='<登录返回的 access_token>'
+# 创建草稿：201，返回 status=draft、version=1
+curl -i -X POST http://localhost:8080/api/v1/admin/posts \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title":"阶段四验收","slug":"phase4-acceptance","summary":"","content_md":"# 你好"}'
+
+# 用错误 version 更新：409 post_version_conflict（乐观锁）
+curl -i -X PUT http://localhost:8080/api/v1/admin/posts/4 \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title":"改","slug":"phase4-acceptance","summary":"","content_md":"x","version":99}'
+
+# 发布：200，status=published；公开列表/详情可见
+curl -i -X POST http://localhost:8080/api/v1/admin/posts/4/publish \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"version":1}'
+curl -i http://localhost:8080/api/v1/posts/phase4-acceptance
+
+# 发布后改 slug：409 slug_immutable；取消发布：200
+curl -i -X POST http://localhost:8080/api/v1/admin/posts/4/unpublish \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"version":2}'
+```
+
 DataGrip 使用 `localhost:3306`，数据库为 `tiny_blog`，账号密码取自本机 `.env`。
 
 ## 代码分层
@@ -180,7 +224,7 @@ React 页面 / Zustand 认证状态
   → Axios /api/v1（请求附加 Bearer Token，401 单次并发刷新）
   → Gin Router / Middleware（Request ID → Access Log → Recovery → BearerAuth）
   → Handler：读取 HTTP 参数，映射 HTTP 响应与 Cookie
-  → Service：登录校验、Refresh 轮转、账号状态规则
+  → Service：认证规则、文章状态流转、乐观锁、slug 锁定
   → Repository：用 GORM 查询数据库（Refresh 轮转在事务中完成）
   → MySQL：文章、管理员与会话数据的唯一事实来源
 ```
@@ -201,6 +245,9 @@ backend/seeds/                       # 显式开发数据
 frontend/src/api/                    # Axios 实例与错误描述
 frontend/src/stores/                 # Zustand 认证状态与拦截器
 frontend/src/features/auth/          # 认证 API 与类型
+frontend/src/features/posts/         # 公开/管理文章 API 与类型
+frontend/src/components/             # ByteMD Markdown 编辑器/预览器
+frontend/src/layouts/                # 管理后台顶部导航布局
 frontend/src/pages/                  # 公开页与管理页及页面测试
 deploy/compose.yaml                  # MySQL 和 migration job
 ```
@@ -212,7 +259,7 @@ deploy/compose.yaml                  # MySQL 和 migration job
 - Handler 不直接查询 GORM，Repository 不返回 HTTP 状态码。
 - 所有 Repository 查询都传入 `context.Context`。
 - 草稿对公开请求统一表现为 404。
-- 前端按纯文本显示 Markdown 原文，不注入不安全 HTML。
+- Markdown 原文存于 MySQL；前端用 ByteMD 渲染，禁用原始 HTML、协议白名单 + 安全清洗，脚本不能执行。
 - 密码只保存 bcrypt 哈希；Refresh Token 只保存 SHA-256，Access Token 不进 LocalStorage。
 - Refresh Cookie 必须 HttpOnly；生产环境必须 Secure，且 JWT 密钥不得使用示例值。
 - 登录失败文案不区分“用户名不存在”和“密码错误”；日志禁止记录密码、Token 和 Cookie。

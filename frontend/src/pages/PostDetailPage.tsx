@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 
 import { describeApiProblem } from "../api/errors";
+import { MarkdownViewer } from "../components/MarkdownViewer";
 import { getPost } from "../features/posts/api";
 import type { PostDetail } from "../features/posts/types";
 
@@ -91,11 +92,12 @@ export function PostDetailPage() {
               {currentState.post.summary}
             </Typography.Paragraph>
 
-            {/* 阶段四才引入正式 Markdown 渲染器。
-                现在按纯文本显示，可避免 dangerouslySetInnerHTML 带来的 XSS 风险。 */}
-            <Typography.Paragraph className="!mt-8 !whitespace-pre-wrap !text-base !leading-8">
-              {currentState.post.content_md}
-            </Typography.Paragraph>
+            {/* 阶段四起使用 ByteMD 渲染 Markdown 正文。
+                MarkdownViewer 与编辑器共用同一套安全策略：
+                禁用原始 HTML、协议白名单、安全清洗，防止脚本注入（设计文档 9.5）。 */}
+            <div className="!mt-8">
+              <MarkdownViewer value={currentState.post.content_md} />
+            </div>
           </Card>
         )}
       </article>

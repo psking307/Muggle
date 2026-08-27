@@ -9,6 +9,13 @@ vi.mock("../features/posts/api", () => ({
   getPost: vi.fn(),
 }));
 
+// 详情页测试关注“状态处理”而不是 ByteMD 的渲染细节，
+// 因此用轻量替身替代 MarkdownViewer，把 Markdown 原文直接输出为文本。
+// ByteMD 自身的安全清洗行为由 MarkdownViewer.test.tsx 单独验证。
+vi.mock("../components/MarkdownViewer", () => ({
+  MarkdownViewer: ({ value }: { value?: string }) => <div>{value}</div>,
+}));
+
 const mockedGetPost = vi.mocked(getPost);
 
 // 通过真实的参数路由渲染详情页，确保 useParams 读取到的 slug 也属于测试范围。

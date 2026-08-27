@@ -40,13 +40,23 @@ func AccessLog(log *zap.Logger) gin.HandlerFunc {
 		}
 
 		// 每个 zap 字段都有明确类型，日志进入检索系统后可以按字段过滤、排序或聚合。
-		log.Info("HTTP request",
+		fields := []zap.Field{
 			zap.String("request_id", fmt.Sprint(requestID)),
 			zap.String("method", c.Request.Method),
 			zap.String("route", route),
 			zap.Int("status", c.Writer.Status()),
 			zap.Int64("latency_ms", time.Since(startedAt).Milliseconds()),
 			zap.String("error_code", errorCode),
-		)
+		}
+
+		// 认证中间件成功后会写入 admin_id；带上它，管理员操作日志就能按人检索。
+		// 未认证请求没有该值，因此字段是可选的，而不是永远写 0。
+		if value, exists := c.Get(AdminIDKey); exists {
+			if adminID, ok := value.(uint64); ok {
+				fields = append(fields, zap.Uint64("admin_id", adminID))
+			}
+		}
+
+		log.Info("HTTP request", fields...)
 	}
 }

@@ -10,8 +10,10 @@ import (
 	"syscall"
 
 	"github.com/gin-gonic/gin"
+	"github.com/psking307/Muggle/backend/internal/admin"
 	"github.com/psking307/Muggle/backend/internal/config"
 	"github.com/psking307/Muggle/backend/internal/httpapi"
+	"github.com/psking307/Muggle/backend/internal/httpapi/middleware"
 	"github.com/psking307/Muggle/backend/internal/platform/database"
 	"github.com/psking307/Muggle/backend/internal/post"
 	"go.uber.org/zap"
@@ -48,6 +50,28 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 	postService := post.NewService(postRepository)
 	postHandler := post.NewHandler(postService, log)
 
+	// 阶段三：组装管理员认证依赖链。
+	// adminRepository 与 postRepository 共用同一个 GORM 连接池。
+	adminRepository := admin.NewGORMRepository(db)
+	adminService := admin.NewService(
+		adminRepository,
+		cfg.Auth.JWTSecret,
+		cfg.Auth.AccessTokenTTL,
+		cfg.Auth.RefreshSessionTTL,
+	)
+	adminHandler := admin.NewHandler(
+		adminService,
+		admin.CookieConfig{
+			Name:     cfg.Auth.RefreshCookieName,
+			Secure:   cfg.Auth.RefreshCookieSecure,
+			SameSite: parseSameSite(cfg.Auth.RefreshCookieSameSite),
+			MaxAge:   int(cfg.Auth.RefreshSessionTTL.Seconds()),
+			Path:     "/api/v1/admin",
+		},
+		cfg.Auth.PublicOrigin,
+		log,
+	)
+
 	// Router 先安装全局中间件和 live，再由各业务模块注册自己的路由。
 	router := httpapi.NewRouter(log)
 	if cfg.App.Env == "development" {
@@ -57,6 +81,14 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 	apiV1 := router.Group("/api/v1")
 	httpapi.RegisterReadyRoute(apiV1, sqlDB)
 	post.RegisterPublicRoutes(apiV1, postHandler)
+
+	// BearerAuth 使用与签发端相同的 JWT 密钥；只有验证通过的管理请求
+	// 才能进入受保护的 Handler（当前是 GET /admin/me）。
+	admin.RegisterRoutes(
+		apiV1,
+		adminHandler,
+		middleware.BearerAuth(cfg.Auth.JWTSecret),
+	)
 
 	// 使用显式 http.Server，而不是 router.Run。
 	// 这样可以为不同请求阶段设置超时，防止慢客户端长期占用连接资源。
@@ -121,4 +153,18 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 
 	log.Info("HTTP server stopped")
 	return nil
+}
+
+// parseSameSite 把配置中的字符串转成 net/http 的 SameSite 枚举。
+// 配置加载阶段已经用 oneof 校验过取值，因此这里的 default 分支
+// 只是防御性兜底，正常运行时不会触发。
+func parseSameSite(value string) http.SameSite {
+	switch value {
+	case "strict":
+		return http.SameSiteStrictMode
+	case "none":
+		return http.SameSiteNoneMode
+	default:
+		return http.SameSiteLaxMode
+	}
 }

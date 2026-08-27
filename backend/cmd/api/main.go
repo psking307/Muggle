@@ -1,9 +1,13 @@
 // Package main 提供 Muggle API 进程的启动入口。
 //
 // @title Muggle API
-// @version 0.2.0
-// @description Muggle Tiny Blog 阶段二公开文章 API。
+// @version 0.3.0
+// @description Muggle Tiny Blog 阶段三 API：公开文章读取 + 管理员认证与会话。
 // @BasePath /api/v1
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description 管理接口使用 Bearer Access Token：Authorization: Bearer <token>
 package main
 
 import (

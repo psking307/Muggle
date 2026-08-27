@@ -38,6 +38,11 @@ var configEnvironmentNames = []string{
 	"REFRESH_COOKIE_SECURE",
 	"REFRESH_COOKIE_SAME_SITE",
 	"PUBLIC_ORIGIN",
+	"KAFKA_BROKERS",
+	"KAFKA_TOPIC",
+	"KAFKA_CONSUMER_GROUP",
+	"WORKER_HTTP_ADDR",
+	"WORKER_SHUTDOWN_TIMEOUT",
 }
 
 // validTestConfig 是多项测试共用的一份完整且合法的 YAML 配置。
@@ -232,6 +237,31 @@ auth:
 	require.Error(t, err)
 	// 同时检查错误上下文，确认报错确实发生在 HTTP 地址校验阶段。
 	assert.Contains(t, err.Error(), "validate HTTP address")
+}
+
+// TestLoadFileParsesKafkaBrokersFromEnvironment 验证逗号分隔的 KAFKA_BROKERS
+// 环境变量能被正确解析成 []string（阶段六新增的 StringToSliceHookFunc）。
+func TestLoadFileParsesKafkaBrokersFromEnvironment(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Setenv("KAFKA_BROKERS", "kafka-1:9092,kafka-2:9092")
+	configFile := writeTestConfig(t, validTestConfig)
+
+	cfg, err := loadFile(configFile)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"kafka-1:9092", "kafka-2:9092"}, cfg.Kafka.Brokers)
+}
+
+// TestLoadFileRejectsInvalidKafkaBroker 验证格式非法的 Kafka broker 地址会被拒绝。
+func TestLoadFileRejectsInvalidKafkaBroker(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Setenv("KAFKA_BROKERS", "not-an-address")
+	configFile := writeTestConfig(t, validTestConfig)
+
+	_, err := loadFile(configFile)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validate Kafka broker")
 }
 
 // writeTestConfig 把给定内容写入一个临时 YAML 文件，并返回文件路径。

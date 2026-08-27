@@ -73,6 +73,10 @@ type Repository interface {
 		slug string,
 	) (*Post, error)
 
+	// GetViewCount 读取文章的累计浏览量（阶段六新增）。
+	// post_stats 中没有该文章的统计行时返回 0，而不是报错。
+	GetViewCount(ctx context.Context, postID uint64) (uint64, error)
+
 	// ---- 管理端（阶段 4）----
 
 	// ListForAdmin 返回管理端文章列表（草稿 + 已发布，不含 content_md），

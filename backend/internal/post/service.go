@@ -30,6 +30,19 @@ type PublicService interface {
 	) (PublicDetail, CacheStatus, error)
 }
 
+// ViewEventProducer 描述“发布浏览事件”这个最小能力（阶段六新增）。
+//
+// 接口定义在 post 包（消费方）而不是 view 包（实现方）：文章 Service 只关心
+// “成功读取详情后要发一条浏览事件”，不关心事件具体如何投递。view.Producer
+// 通过结构体方法 PublishViewed(postID) 天然满足该接口，无需显式声明实现。
+//
+// 生产是“尽力而为”的：Kafka 不可用时失败只记日志，不影响文章响应。
+type ViewEventProducer interface {
+	// PublishViewed 尽力投递一条“文章被浏览”的事件。
+	// postID 是被浏览文章的主键。方法应是异步、非阻塞的。
+	PublishViewed(postID uint64)
+}
+
 // CreatePostInput 是创建草稿时 Service 需要的业务输入。
 // 与 HTTP 层的 CreatePostRequest 分离，避免 Service 依赖 Gin 的绑定语义，
 // 也便于测试直接构造参数调用 Service。
@@ -75,20 +88,26 @@ type AdminService interface {
 //
 // cache 是可选依赖：为 nil 时（例如某些测试、或阶段 5 之前的部署形态）
 // 公开读会直接回源 MySQL 并返回 CacheBypass，不影响任何业务行为。
+//
+// producer 是可选依赖（阶段六新增）：为 nil 时跳过浏览事件投递；
+// 生产环境由 bootstrap 注入基于 franz-go 的实现。
 type Service struct {
 	repository Repository
 	cache      Cache
+	producer   ViewEventProducer
 	now        func() time.Time
 }
 
 // NewService 组装文章 Service。now 默认使用系统时间。
 //
-// cache 传 nil 表示不启用缓存（降级为每次直读数据库）；生产环境由
-// bootstrap 注入基于 Redis 的实现。
-func NewService(repository Repository, cache Cache) *Service {
+// cache 传 nil 表示不启用缓存（降级为每次直读数据库）；
+// producer 传 nil 表示不投递浏览事件（例如单元测试）。生产环境由
+// bootstrap 注入基于 Redis 的缓存实现和基于 franz-go 的事件生产者。
+func NewService(repository Repository, cache Cache, producer ViewEventProducer) *Service {
 	return &Service{
 		repository: repository,
 		cache:      cache,
+		producer:   producer,
 		now:        time.Now,
 	}
 }
@@ -194,33 +213,70 @@ func (s *Service) listPublishedFromDB(
 // 未配置缓存 → BYPASS；缓存故障 → BYPASS；命中 → HIT；
 // 未命中 → 回源 MySQL + 回填缓存 → MISS。
 //
-// 详情缓存只保存 PublicDetail（不含浏览量），浏览量将在阶段 6 由
-// post_stats 表提供，避免计数更新后详情缓存长期显示旧值。
+// 浏览量处理（阶段六，设计文档 6.6 / 7.1）：
+//   * 详情缓存只保存正文等静态内容，不保存 view_count——写缓存前会把
+//     ViewCount 清零，避免计数更新后缓存里长期显示旧值；
+//   * 缓存命中时，浏览量通过 repository.GetViewCount 实时回源刷新（失败则
+//     保留 0，属于尽力而为，不影响正文读取）；
+//   * 每次成功读到详情（无论 HIT/MISS/BYPASS）都算一次浏览，投递浏览事件。
 func (s *Service) GetPublishedBySlug(
 	ctx context.Context,
 	slug string,
 ) (PublicDetail, CacheStatus, error) {
 	if s.cache == nil {
 		detail, err := s.detailFromDB(ctx, slug)
-		return detail, CacheBypass, err
+		if err != nil {
+			return PublicDetail{}, CacheBypass, err
+		}
+		s.publishView(detail.ID)
+		return detail, CacheBypass, nil
 	}
 
 	cached, err := s.cache.GetPostDetail(ctx, slug)
 	if err == nil {
-		return *cached, CacheHit, nil
+		// 命中缓存：正文来自缓存，但浏览量必须实时回源 post_stats，
+		// 不能使用缓存里可能过期的计数。
+		detail := *cached
+		if count, countErr := s.repository.GetViewCount(ctx, detail.ID); countErr == nil {
+			detail.ViewCount = count
+		}
+		// countErr != nil 时保留 detail.ViewCount 的缓存值（写入时被清零为 0），
+		// 属于尽力而为：浏览量是最终一致的近似值，本次显示 0 可接受。
+		s.publishView(detail.ID)
+		return detail, CacheHit, nil
 	}
 	if !errors.Is(err, ErrCacheMiss) {
 		detail, err := s.detailFromDB(ctx, slug)
-		return detail, CacheBypass, err
+		if err != nil {
+			return PublicDetail{}, CacheBypass, err
+		}
+		s.publishView(detail.ID)
+		return detail, CacheBypass, nil
 	}
 
 	detail, err := s.detailFromDB(ctx, slug)
 	if err != nil {
 		return PublicDetail{}, CacheMiss, err
 	}
-	_ = s.cache.SetPostDetail(ctx, slug, detail)
+	// 写缓存前把 ViewCount 清零：详情缓存不保存浏览量（设计文档 7.1）。
+	// 这样无论缓存被命中多少次，返回给访客的计数都来自实时查询。
+	cachedCopy := detail
+	cachedCopy.ViewCount = 0
+	_ = s.cache.SetPostDetail(ctx, slug, cachedCopy)
 
+	s.publishView(detail.ID)
 	return detail, CacheMiss, nil
+}
+
+// publishView 在成功读到公开详情后，尽力投递一条浏览事件。
+//
+// producer 为 nil（未配置）时直接跳过；投递本身是异步、非阻塞的，
+// 失败由 Producer 内部记录日志，绝不反作用到已经成功的文章响应上。
+func (s *Service) publishView(postID uint64) {
+	if s.producer == nil {
+		return
+	}
+	s.producer.PublishViewed(postID)
 }
 
 // detailFromDB 从 MySQL 读取公开详情并转换为 DTO。
@@ -245,6 +301,7 @@ func (s *Service) detailFromDB(ctx context.Context, slug string) (PublicDetail, 
 		Summary:     model.Summary,
 		ContentMD:   model.ContentMD,
 		PublishedAt: model.PublishedAt.UTC(),
+		ViewCount:   model.ViewCount,
 	}, nil
 }
 

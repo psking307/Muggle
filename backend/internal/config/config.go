@@ -17,14 +17,17 @@ import (
 // Config 是 API 进程的总配置。
 // 阶段二在阶段一已有的应用、HTTP 和日志配置基础上加入 MySQL，
 // 阶段三继续加入管理员认证所需的 JWT 与 Refresh Cookie 配置，
-// 阶段五再为公开文章缓存加入 Redis。
+// 阶段五再为公开文章缓存加入 Redis，
+// 阶段六加入 Kafka（浏览事件）与 Worker（独立消费进程）配置。
 type Config struct {
-	App   AppConfig   `mapstructure:"app"`
-	HTTP  HTTPConfig  `mapstructure:"http"`
-	Log   LogConfig   `mapstructure:"log"`
-	MySQL MySQLConfig `mapstructure:"mysql"`
-	Redis RedisConfig `mapstructure:"redis"`
-	Auth  AuthConfig  `mapstructure:"auth"`
+	App    AppConfig    `mapstructure:"app"`
+	HTTP   HTTPConfig   `mapstructure:"http"`
+	Log    LogConfig    `mapstructure:"log"`
+	MySQL  MySQLConfig  `mapstructure:"mysql"`
+	Redis  RedisConfig  `mapstructure:"redis"`
+	Auth   AuthConfig   `mapstructure:"auth"`
+	Kafka  KafkaConfig  `mapstructure:"kafka"`
+	Worker WorkerConfig `mapstructure:"worker"`
 }
 
 // AppConfig 描述应用自身的信息。
@@ -142,6 +145,39 @@ type AuthConfig struct {
 	PublicOrigin string `mapstructure:"public_origin" validate:"required"`
 }
 
+// KafkaConfig 描述连接 Kafka 所需的配置（阶段六）。
+//
+// Kafka 在系统里的定位与 Redis 类似，都不是业务事实来源：浏览事件是“尽力而为”
+// 的异步信号，Kafka 不可用时文章读取不受影响、只可能少算浏览量（设计文档 7.2）。
+// 因此 API 侧的 Kafka 客户端用惰性连接，broker 不可用也不会阻止启动。
+type KafkaConfig struct {
+	// Brokers 是 Kafka 集群的种子地址列表，例如 ["127.0.0.1:9092"]。
+	// 开发环境用本机映射端口；容器环境用服务名（kafka:9092）。
+	// 环境变量 KAFKA_BROKERS 使用逗号分隔多个地址。
+	// 每项的 host:port 格式由 validateKafkaBrokers 在解码后进一步校验。
+	Brokers []string `mapstructure:"brokers" validate:"required,min=1"`
+
+	// Topic 是浏览事件写入的主题名（设计文档 7.2：blog.post-viewed.v1）。
+	Topic string `mapstructure:"topic" validate:"required"`
+
+	// ConsumerGroup 是 Worker 消费事件时加入的消费组名。
+	// 同一个组的多个 Worker 会按分区自动分片，每个事件只被其中一个消费。
+	ConsumerGroup string `mapstructure:"consumer_group" validate:"required"`
+}
+
+// WorkerConfig 描述独立 Worker 进程自身的运行配置（阶段六）。
+//
+// Worker 与 API 共用 Config 里的 MySQL/Kafka 配置，但拥有独立的 HTTP 监听地址，
+// 用来提供仅供 Compose/Kubernetes 探测的内部 live/ready 端点（设计文档 6.6/3.2）。
+type WorkerConfig struct {
+	// HTTPAddr 是 Worker 内部健康检查端点的监听地址，例如 ":8081"。
+	// 它不对外提供业务接口，只服务存活/就绪探针。
+	HTTPAddr string `mapstructure:"http_addr" validate:"required"`
+
+	// ShutdownTimeout 是收到 SIGTERM 后，Worker 完成当前事件处理并退出的最长时间。
+	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout" validate:"gt=0"`
+}
+
 // Load 从后端约定路径读取阶段 1 配置。
 //
 // 调用者应从 backend 目录启动程序，因此相对路径会指向
@@ -199,6 +235,11 @@ func loadFile(configFile string) (*Config, error) {
 		"auth.refresh_cookie_secure":    "REFRESH_COOKIE_SECURE",
 		"auth.refresh_cookie_same_site": "REFRESH_COOKIE_SAME_SITE",
 		"auth.public_origin":            "PUBLIC_ORIGIN",
+		"kafka.brokers":                 "KAFKA_BROKERS",
+		"kafka.topic":                   "KAFKA_TOPIC",
+		"kafka.consumer_group":          "KAFKA_CONSUMER_GROUP",
+		"worker.http_addr":              "WORKER_HTTP_ADDR",
+		"worker.shutdown_timeout":       "WORKER_SHUTDOWN_TIMEOUT",
 	}
 
 	for key, envName := range bindings {
@@ -208,11 +249,17 @@ func loadFile(configFile string) (*Config, error) {
 	}
 
 	// Unmarshal 按 mapstructure 标签把配置写入 cfg。
-	// DecodeHook 把 "5s"、"10m" 等字符串转换成 time.Duration。
+	// DecodeHook 依次完成两类字符串转换：
+	//   * StringToTimeDurationHookFunc 把 "5s"、"10m" 等转换成 time.Duration；
+	//   * StringToSliceHookFunc(",") 把 "a,b" 之类的逗号串转换成 []string，
+	//     用于 KAFKA_BROKERS 这类“逗号分隔的地址列表”环境变量。
 	var cfg Config
 	if err := v.Unmarshal(
 		&cfg,
-		viper.DecodeHook(mapstructure.StringToTimeDurationHookFunc()),
+		viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+			mapstructure.StringToTimeDurationHookFunc(),
+			mapstructure.StringToSliceHookFunc(","),
+		)),
 	); err != nil {
 		return nil, fmt.Errorf("decode configuration: %w", err)
 	}
@@ -233,6 +280,16 @@ func loadFile(configFile string) (*Config, error) {
 	// 可信来源必须是合法的 http/https URL，防止配置写成任意字符串。
 	if err := validatePublicOrigin(cfg.Auth.PublicOrigin); err != nil {
 		return nil, err
+	}
+
+	// Kafka 的每个 broker 地址都必须是 host:port 格式，端口在有效范围内。
+	if err := validateKafkaBrokers(cfg.Kafka.Brokers); err != nil {
+		return nil, err
+	}
+
+	// Worker 内部健康端点监听地址同样是 host:port 格式。
+	if err := validateHTTPAddress(cfg.Worker.HTTPAddr); err != nil {
+		return nil, fmt.Errorf("validate worker HTTP address %q: %w", cfg.Worker.HTTPAddr, err)
 	}
 
 	// 生产环境额外拒绝危险配置：
@@ -287,6 +344,16 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.refresh_cookie_secure", false)
 	v.SetDefault("auth.refresh_cookie_same_site", "lax")
 	v.SetDefault("auth.public_origin", "http://localhost:5173")
+
+	// Kafka（阶段六）：默认指向本机标准端口 9092。
+	// 与 Redis 一样是可选依赖，broker 不可用时 API 仍然可以正常提供文章读取。
+	v.SetDefault("kafka.brokers", []string{"127.0.0.1:9092"})
+	v.SetDefault("kafka.topic", "blog.post-viewed.v1")
+	v.SetDefault("kafka.consumer_group", "blog-view-counter-v1")
+
+	// Worker（阶段六）：内部健康端点默认监听 8081，与 API 的 8080 错开。
+	v.SetDefault("worker.http_addr", ":8081")
+	v.SetDefault("worker.shutdown_timeout", "10s")
 }
 
 // validateHTTPAddress 验证监听地址使用 host:port 格式，且端口位于有效范围内。
@@ -303,6 +370,26 @@ func validateHTTPAddress(address string) error {
 		return fmt.Errorf("validate HTTP address %q: port must be between 1 and 65535", address)
 	}
 
+	return nil
+}
+
+// validateKafkaBrokers 校验每个 Kafka broker 地址都使用 host:port 格式，且端口有效。
+//
+// 与 validateHTTPAddress 思路一致：结构体标签只能保证切片非空，无法确认
+// 每一项真的是合法地址，因此在这里逐项校验，避免 Kafka 客户端拿到畸形地址
+// 后在运行期反复连接失败。
+func validateKafkaBrokers(brokers []string) error {
+	for _, broker := range brokers {
+		// SplitHostPort 把 "host:port" 拆成两部分；无法拆开说明格式非法。
+		_, portText, err := net.SplitHostPort(broker)
+		if err != nil {
+			return fmt.Errorf("validate Kafka broker %q: %w", broker, err)
+		}
+		port, err := strconv.Atoi(portText)
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("validate Kafka broker %q: port must be between 1 and 65535", broker)
+		}
+	}
 	return nil
 }
 

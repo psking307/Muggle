@@ -764,6 +764,9 @@
         "httpapi.ReadyChecks": {
             "type": "object",
             "properties": {
+                "kafka": {
+                    "type": "string"
+                },
                 "mysql": {
                     "type": "string"
                 },
@@ -947,6 +950,9 @@
                 },
                 "title": {
                     "type": "string"
+                },
+                "view_count": {
+                    "type": "integer"
                 }
             }
         },

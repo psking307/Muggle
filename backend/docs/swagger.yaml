@@ -39,6 +39,8 @@ definitions:
     type: object
   httpapi.ReadyChecks:
     properties:
+      kafka:
+        type: string
       mysql:
         type: string
       redis:
@@ -159,6 +161,8 @@ definitions:
         type: string
       title:
         type: string
+      view_count:
+        type: integer
     type: object
   post.PublicListItem:
     properties:

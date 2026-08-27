@@ -1,6 +1,6 @@
 # Muggle Tiny Blog
 
-Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶段 5：在写作闭环之上，为公开文章列表与详情增加了可删除、可重建、故障可降级的 Redis Cache-Aside 缓存。
+Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶段 6：在 Redis Cache-Aside 之上，用 Kafka + 独立 Worker 实现了“读取文章 → 浏览事件 → 幂等更新浏览量”的异步链路。
 
 ## 阶段 2 已实现
 
@@ -56,6 +56,22 @@ Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶�
 - Redis 故障时记录降级日志并回源 MySQL；`/health/ready` 把 Redis 标记为 `down` 但不拖垮整体就绪。
 - 测试覆盖命中/未命中/降级三态、写缓存失败、失效与 Redis 不可达场景。
 
+## 阶段 6 已实现
+
+- Docker Compose 加入单节点 Kafka（KRaft，无 Zookeeper），映射 `127.0.0.1:9092`。
+- 浏览事件主题 `blog.post-viewed.v1`（3 分区、RF=1），由 Worker 启动时用 kadm 幂等创建。
+- `post_stats`（每篇文章一行累计浏览量）与 `processed_events`（event_id 幂等去重表）两个 migration。
+- 版本化浏览事件 DTO：`{ event_id, event_type: "post.viewed.v1", post_id, occurred_at }`。
+- 用 franz-go 实现 API 生产者：公开详情读取成功后**尽力异步**投递事件，失败只记日志、不影响响应。
+- 独立 `cmd/worker` 进程：固定消费组 `blog-view-counter-v1`，关闭自动提交，数据库事务成功后手动提交 offset。
+- Worker 幂等消费：先插 `processed_events`（唯一键去重），再原子 `view_count + 1`，重复事件不会重复计数。
+- 文章详情通过 `LEFT JOIN post_stats + COALESCE(view_count, 0)` 返回当前浏览量；详情缓存不缓存计数。
+- Worker 提供内部 `/health/live`、`/health/ready` 端点（ready 同时检查 MySQL 与 Kafka）。
+- 前端详情页展示浏览量，并注明“最终一致，可能略有延迟”。
+- 测试覆盖事件序列化、消费者决策（非法/重复/失败）、幂等落库集成测试。
+
+**已知限制（有意保留的权衡）**：Kafka 不可用期间浏览事件会丢失、少算浏览量；这是学习阶段为了不把浏览量升级为文章主事务而保留的行为，不引入 Transactional Outbox。
+
 ## 环境要求
 
 在 WSL Ubuntu 中准备 Go、Node.js、npm、Git、Make，以及开启 WSL Integration 的 Docker Desktop。项目位于：
@@ -83,16 +99,17 @@ cd frontend && npm install && cd ..
 
 根 Makefile 会把仓库根目录的 `.env` 注入 Go 进程和 Docker Compose。
 
-## 从零启动阶段 5
+## 从零启动阶段 6
 
 在仓库根目录依次运行：
 
 ```bash
-make dev-infra     # 1. 启动 MySQL 与 Redis，等待容器变为 healthy
-make migrate-up    # 2. 按版本创建数据库表（posts、admins、refresh_sessions）
+make dev-infra     # 1. 启动 MySQL、Redis 与 Kafka，等待容器变为 healthy
+make migrate-up    # 2. 按版本创建数据库表（posts、admins、refresh_sessions、post_stats、processed_events）
 make seed          # 3. 写入三篇开发文章，可安全重复执行
 make admin-create  # 4. 交互式创建初始管理员（密码不回显）
 make dev-api       # 5. 启动 Gin API：http://localhost:8080
+make dev-worker    # 6. 启动 Worker：消费 Kafka 浏览事件并更新浏览量
 ```
 
 另开一个 WSL 终端：
@@ -112,8 +129,9 @@ make dev-web     # 启动网页：http://localhost:5173
 ## 常用命令
 
 ```bash
-make dev-infra        # 启动 MySQL、Redis 开发容器
+make dev-infra        # 启动 MySQL、Redis、Kafka 开发容器
 make dev-api          # 在 WSL 直接运行 Gin API
+make dev-worker       # 运行 Worker（消费 Kafka 浏览事件）
 make dev-web          # 运行 Vite 前端开发服务器
 make admin-create     # 交互式创建初始管理员
 make migrate-up       # 执行尚未执行的 migration
@@ -124,7 +142,8 @@ make fmt              # 格式化 Go 代码
 make lint             # go vet、ESLint、TypeScript 类型检查
 make test             # 后端单元/Handler测试和前端页面测试
 make test-integration # post/admin 的 MySQL 集成测试 + post 的 Redis 集成测试
-make build            # 构建 Go 二进制和 React 生产文件
+make test-kafka-integration # view 的 MySQL + Kafka 幂等集成测试
+make build            # 构建 Go 二进制（api/worker/admin）和 React 生产文件
 make compose-down     # 停止容器，但保留 MySQL volume
 ```
 
@@ -256,10 +275,11 @@ React 页面 / Zustand 认证状态
   → Axios /api/v1（请求附加 Bearer Token，401 单次并发刷新）
   → Gin Router / Middleware（Request ID → Access Log → Recovery → BearerAuth）
   → Handler：读取 HTTP 参数，映射 HTTP 响应与 Cookie
-  → Service：认证规则、文章状态流转、乐观锁、slug 锁定、缓存失效
+  → Service：认证规则、文章状态流转、乐观锁、slug 锁定、缓存失效、投递浏览事件
   → Cache（Redis 适配器）：公开文章的 Cache-Aside 缓存，故障时降级回源
   → Repository：用 GORM 查询数据库（Refresh 轮转在事务中完成）
-  → MySQL：文章、管理员与会话数据的唯一事实来源
+  → MySQL：文章、管理员与会话、浏览量数据的唯一事实来源
+  →（异步）Producer → Kafka → Worker Consumer → Repository → MySQL
 ```
 
 主要目录：
@@ -267,12 +287,15 @@ React 页面 / Zustand 认证状态
 ```text
 backend/cmd/admin/                   # 离线创建管理员的命令
 backend/cmd/api/                     # API 进程入口
+backend/cmd/worker/                  # Worker 进程入口（消费 Kafka 浏览事件）
 backend/docs/                        # 自动生成的 Swagger/OpenAPI
 backend/internal/httpapi/            # Router、健康检查、统一响应、Middleware
 backend/internal/admin/              # 管理员认证业务分层
 backend/internal/post/               # 文章业务分层
+backend/internal/view/               # 浏览事件：event/producer/consumer 与幂等 Repository
 backend/internal/platform/database/  # GORM/MySQL 技术适配
 backend/internal/platform/rediscache/ # go-redis 技术适配
+backend/internal/platform/kafka/     # franz-go 技术适配（生产者/消费者/建主题）
 backend/internal/platform/security/  # bcrypt、JWT、Refresh Token 工具
 backend/migrations/                  # 版本化数据库结构
 backend/seeds/                       # 显式开发数据
@@ -283,7 +306,7 @@ frontend/src/features/posts/         # 公开/管理文章 API 与类型
 frontend/src/components/             # ByteMD Markdown 编辑器/预览器
 frontend/src/layouts/                # 管理后台顶部导航布局
 frontend/src/pages/                  # 公开页与管理页及页面测试
-deploy/compose.yaml                  # MySQL 和 migration job
+deploy/compose.yaml                  # MySQL、Redis、Kafka 和 migration job
 ```
 
 ## 安全与工程约束
@@ -299,3 +322,5 @@ deploy/compose.yaml                  # MySQL 和 migration job
 - 登录失败文案不区分“用户名不存在”和“密码错误”；日志禁止记录密码、Token 和 Cookie。
 - Refresh 每次轮转，旧 Token 立即失效；Refresh 与退出校验可信 Origin。
 - MySQL 是业务事实来源；Redis 只保存可删除、可重建的公开文章缓存，Redis 故障降级回源 MySQL。
+- Kafka 只承载“尽力而为”的浏览事件，不参与文章读取/发布的主流程；Kafka 故障时文章仍可读、只可能少算浏览量。
+- Worker 幂等消费：先落库（`processed_events` 唯一键去重 + `post_stats` 原子累加）再提交 Kafka offset，重复事件不会重复计数。

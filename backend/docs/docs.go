@@ -771,6 +771,9 @@ const docTemplate = `{
         "httpapi.ReadyChecks": {
             "type": "object",
             "properties": {
+                "kafka": {
+                    "type": "string"
+                },
                 "mysql": {
                     "type": "string"
                 },
@@ -954,6 +957,9 @@ const docTemplate = `{
                 },
                 "title": {
                     "type": "string"
+                },
+                "view_count": {
+                    "type": "integer"
                 }
             }
         },

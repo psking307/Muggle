@@ -24,6 +24,12 @@ type RedisPinger interface {
 	Ping(ctx context.Context) error
 }
 
+// KafkaPinger 只描述 readiness 检查 Kafka 所需的最小能力（阶段六新增）。
+// 与 Redis 一样，Kafka 是可选依赖：失败只标记 degraded，不让 API 整体下线。
+type KafkaPinger interface {
+	Ping(ctx context.Context) error
+}
+
 // LiveResponse 是存活探针的稳定响应结构。
 // 使用明确 DTO 而不是临时 gin.H，可以让运行时代码、测试和 Swagger 共用同一份契约。
 type LiveResponse struct {
@@ -32,11 +38,12 @@ type LiveResponse struct {
 
 // ReadyChecks 列出 readiness 当前检查的依赖。
 // MySQL 是公开文章的必要依赖（失败会让 ready 返回 503）；
-// Redis 只是可选缓存（失败仅标记 degraded，不拖垮整体就绪状态）。
-// omitempty 让 Redis 未启用时不出现在响应里，保持与阶段 4 之前的契约兼容。
+// Redis 与 Kafka 只是可选依赖（失败仅标记 degraded，不拖垮整体就绪状态）。
+// omitempty 让未启用的依赖不出现在响应里，保持与之前阶段的契约兼容。
 type ReadyChecks struct {
 	MySQL string `json:"mysql"`
 	Redis string `json:"redis,omitempty"`
+	Kafka string `json:"kafka,omitempty"`
 }
 
 // ReadyResponse 是就绪探针在成功和失败时共用的响应结构。
@@ -64,18 +71,18 @@ func live(c *gin.Context) {
 
 // RegisterReadyRoute 注册检查依赖的就绪探针。
 //
-// pinger 是 MySQL 的探针（必要依赖）；redis 是可选缓存探针，
-// 传 nil 表示当前进程未启用 Redis（此时 ready 只检查 MySQL）。
-func RegisterReadyRoute(routes *gin.RouterGroup, pinger DatabasePinger, redis RedisPinger) {
-	routes.GET("/health/ready", ready(pinger, redis))
+// pinger 是 MySQL 的探针（必要依赖）；redis 是可选缓存探针，kafka 是可选
+// 事件探针（阶段六）。传 nil 表示当前进程未启用对应依赖，此时 ready 不检查它。
+func RegisterReadyRoute(routes *gin.RouterGroup, pinger DatabasePinger, redis RedisPinger, kafka KafkaPinger) {
+	routes.GET("/health/ready", ready(pinger, redis, kafka))
 }
 
 // ready 回答“API 当前是否具备处理真实文章请求的条件”。
 // MySQL 不可用时 API 进程仍然存活，因此 live 保持 200，而 ready 返回 503。
 //
-// Redis 故障只把 checks.redis 标记为 down，不影响整体 Status：
-// 公开文章可以降级回源 MySQL，登录与 Refresh 也不依赖 Redis，
-// 因此不因 Redis 下线就判定整个 API「未就绪」。
+// Redis 与 Kafka 故障只把对应 checks 标记为 down，不影响整体 Status：
+// 公开文章可以降级回源 MySQL，浏览事件也可以少算，因此不因它们下线
+// 就判定整个 API「未就绪」。
 //
 // @Summary 检查 API 是否可以访问必要的 MySQL
 // @Tags health
@@ -83,7 +90,7 @@ func RegisterReadyRoute(routes *gin.RouterGroup, pinger DatabasePinger, redis Re
 // @Success 200 {object} ReadyResponse
 // @Failure 503 {object} ReadyResponse
 // @Router /health/ready [get]
-func ready(pinger DatabasePinger, redis RedisPinger) gin.HandlerFunc {
+func ready(pinger DatabasePinger, redis RedisPinger, kafka KafkaPinger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), readyTimeout)
 		defer cancel()
@@ -106,6 +113,15 @@ func ready(pinger DatabasePinger, redis RedisPinger) gin.HandlerFunc {
 				checks.Redis = "down"
 			} else {
 				checks.Redis = "up"
+			}
+		}
+
+		// 检查可选依赖 Kafka（阶段六）；同样只标记 degraded。
+		if kafka != nil {
+			if err := kafka.Ping(ctx); err != nil {
+				checks.Kafka = "down"
+			} else {
+				checks.Kafka = "up"
 			}
 		}
 

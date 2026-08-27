@@ -1,14 +1,18 @@
-.PHONY: dev-infra dev-api dev-web admin-create migrate-up migrate-down seed swagger fmt lint test test-integration build compose-down
+.PHONY: dev-infra dev-api dev-worker dev-web admin-create migrate-up migrate-down seed swagger fmt lint test test-integration test-kafka-integration build compose-down
 
 COMPOSE := docker compose --env-file .env -f deploy/compose.yaml
 GO ?= /usr/local/go/bin/go
 SWAG ?= $(shell $(GO) env GOPATH)/bin/swag
 
 dev-infra:
-	$(COMPOSE) --profile dev up -d mysql redis
+	$(COMPOSE) --profile dev up -d mysql redis kafka
 
 dev-api:
 	@set -a; [ ! -f .env ] || . ./.env; set +a; $(MAKE) -C backend dev
+
+# 阶段六：独立 Worker 进程，消费 Kafka 浏览事件并幂等更新浏览量。
+dev-worker:
+	@set -a; [ ! -f .env ] || . ./.env; set +a; $(MAKE) -C backend dev-worker
 
 dev-web:
 	npm --prefix frontend run dev
@@ -48,6 +52,10 @@ test:
 
 test-integration:
 	@set -a; . ./.env; set +a; cd backend && MYSQL_TEST_DSN="$${MYSQL_USER}:$${MYSQL_PASSWORD}@tcp($${MYSQL_HOST}:$${MYSQL_PORT})/$${MYSQL_DATABASE}?charset=utf8mb4&parseTime=true&loc=UTC" REDIS_TEST_ADDR="$${REDIS_ADDR}" $(GO) test -tags=integration ./internal/post ./internal/admin -v
+
+# 阶段六：Kafka 幂等消费集成测试（需 MySQL 与 Kafka 容器均已就绪）。
+test-kafka-integration:
+	@set -a; . ./.env; set +a; cd backend && MYSQL_TEST_DSN="$${MYSQL_USER}:$${MYSQL_PASSWORD}@tcp($${MYSQL_HOST}:$${MYSQL_PORT})/$${MYSQL_DATABASE}?charset=utf8mb4&parseTime=true&loc=UTC" KAFKA_TEST_ADDR="$${KAFKA_BROKERS}" $(GO) test -tags=integration ./internal/view -v
 
 build:
 	$(MAKE) -C backend build

@@ -15,9 +15,12 @@ import (
 	"github.com/psking307/Muggle/backend/internal/httpapi"
 	"github.com/psking307/Muggle/backend/internal/httpapi/middleware"
 	"github.com/psking307/Muggle/backend/internal/platform/database"
+	"github.com/psking307/Muggle/backend/internal/platform/kafka"
 	"github.com/psking307/Muggle/backend/internal/platform/rediscache"
 	"github.com/psking307/Muggle/backend/internal/post"
+	"github.com/psking307/Muggle/backend/internal/view"
 	"github.com/redis/go-redis/v9"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"go.uber.org/zap"
 )
 
@@ -66,12 +69,38 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 		}
 	}()
 
+	// 阶段六：创建 Kafka 生产客户端（可选，惰性连接）。
+	//
+	// 与 Redis 一样，Kafka 只是“尽力而为”的浏览事件通道，不是业务事实来源：
+	// broker 不可用时文章读取不受影响，只可能少算浏览量。kgo.NewClient 本身
+	// 就是惰性连接——broker 挂了也不会在这里报错，因此通常不会进入失败分支；
+	// 但为了稳健，失败仍只记录警告，进程继续启动。
+	kafkaClient, err := kafka.NewProducer(cfg.Kafka)
+	if err != nil {
+		log.Warn("kafka unavailable at startup, view events will be dropped",
+			zap.Strings("brokers", cfg.Kafka.Brokers),
+			zap.Error(err),
+		)
+	}
+	if kafkaClient != nil {
+		defer func() {
+			kafkaClient.Close()
+		}()
+	}
+
 	// 按 Repository -> Service -> Handler 的方向组装文章业务依赖。
 	// postService 同时实现公开读（PublicService）与管理写（AdminService）两个接口，
 	// 因此下面分别构造公开 Handler 与管理 Handler，共用同一个 Service 与连接池。
+	//
+	// 浏览事件生产者是可选的：Kafka 客户端创建失败时 eventProducer 为 nil，
+	// 文章 Service 会跳过事件投递，不影响任何读取行为。
 	postRepository := post.NewGORMRepository(db)
 	postCache := post.NewRedisCache(redisClient, log)
-	postService := post.NewService(postRepository, postCache)
+	var eventProducer post.ViewEventProducer
+	if kafkaClient != nil {
+		eventProducer = view.NewProducer(kafkaClient, cfg.Kafka.Topic, log)
+	}
+	postService := post.NewService(postRepository, postCache, eventProducer)
 	postHandler := post.NewHandler(postService, log)
 	postAdminHandler := post.NewAdminHandler(postService, log)
 
@@ -104,7 +133,12 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 		httpapi.RegisterSwagger(router)
 	}
 	apiV1 := router.Group("/api/v1")
-	httpapi.RegisterReadyRoute(apiV1, sqlDB, &redisPinger{client: redisClient})
+	// Kafka 探针同样可选：客户端创建失败时传 nil，ready 就不检查 Kafka。
+	var kafkaPing httpapi.KafkaPinger
+	if kafkaClient != nil {
+		kafkaPing = &kafkaPinger{client: kafkaClient}
+	}
+	httpapi.RegisterReadyRoute(apiV1, sqlDB, &redisPinger{client: redisClient}, kafkaPing)
 	post.RegisterPublicRoutes(apiV1, postHandler)
 
 	// BearerAuth 使用与签发端相同的 JWT 密钥；只有验证通过的管理请求
@@ -213,4 +247,17 @@ type redisPinger struct {
 // Ping 执行一次 Redis PING 探测，把命令错误转换成 error。
 func (p *redisPinger) Ping(ctx context.Context) error {
 	return p.client.Ping(ctx).Err()
+}
+
+// kafkaPinger 把 franz-go 客户端适配成 httpapi.KafkaPinger 需要的 error 语义（阶段六）。
+//
+// kgo.Client.Ping 会向所有已知 broker 发送探测请求，任一不可达即返回错误；
+// 薄适配器把它转成 readiness 需要的「成功 / 失败」信号，并避免 httpapi 直接依赖 franz-go。
+type kafkaPinger struct {
+	client *kgo.Client
+}
+
+// Ping 执行一次 Kafka broker 探测。
+func (p *kafkaPinger) Ping(ctx context.Context) error {
+	return p.client.Ping(ctx)
 }

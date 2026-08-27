@@ -27,6 +27,15 @@ type Post struct {
 	Version     uint64     `gorm:"column:version"`
 	CreatedAt   time.Time  `gorm:"column:created_at"`
 	UpdatedAt   time.Time  `gorm:"column:updated_at"`
+
+	// ViewCount 是文章累计浏览量，来自 post_stats 表的 LEFT JOIN 计算列，
+	// 不属于 posts 表本身的字段。
+	//
+	// gorm:"-" 表示让 GORM 完全忽略该字段：既不会在 INSERT/UPDATE 中写入它，
+	// 也不会在 SELECT 中自动带上它（posts 表没有 view_count 列，若被自动选中
+	// 会导致 SQL 报错）。它只作为普通 Go 字段，由 FindPublishedBySlug 通过
+	// 专门的 LEFT JOIN 查询结果回填，供 Service 组装公开详情 DTO。
+	ViewCount uint64 `gorm:"-"`
 }
 
 // TableName 明确告诉 GORM：Post 对应 MySQL 中的 posts 表。

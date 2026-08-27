@@ -39,6 +39,10 @@ type fakeRepository struct {
 	unpublishResult *Post
 	unpublishErr    error
 
+	// ---- 浏览量（阶段六）----
+	viewCount    uint64
+	viewCountErr error
+
 	// ---- 记录 Service 传入的参数，供断言 ----
 	created       *Post        // 最近一次 Create 收到的文章
 	updatedID     uint64       // 最近一次 Update 收到的 id
@@ -59,6 +63,11 @@ func (f *fakeRepository) FindPublishedBySlug(
 	_ context.Context, _ string,
 ) (*Post, error) {
 	return f.detail, f.detailErr
+}
+
+// GetViewCount 返回预设的浏览量，供缓存 HIT 场景断言“计数实时回源”。
+func (f *fakeRepository) GetViewCount(_ context.Context, _ uint64) (uint64, error) {
+	return f.viewCount, f.viewCountErr
 }
 
 // ---- 管理端 ----
@@ -123,7 +132,7 @@ func TestServiceListsPublishedPosts(t *testing.T) {
 		listTotal: 1,
 	}
 
-	service := NewService(repository, nil)
+	service := NewService(repository, nil, nil)
 	items, meta, _, err := service.ListPublished(context.Background(), 1, 10)
 
 	require.NoError(t, err)
@@ -141,7 +150,7 @@ func TestServiceDoesNotExposeDraft(t *testing.T) {
 		},
 	}
 
-	service := NewService(repository, nil)
+	service := NewService(repository, nil, nil)
 	_, _, err := service.GetPublishedBySlug(context.Background(), "secret-draft")
 
 	assert.ErrorIs(t, err, ErrNotFound)
@@ -153,7 +162,7 @@ func TestServiceRejectsInvalidPublishedListData(t *testing.T) {
 		listTotal: 1,
 	}
 
-	service := NewService(repository, nil)
+	service := NewService(repository, nil, nil)
 	_, _, _, err := service.ListPublished(context.Background(), 1, 10)
 
 	assert.ErrorIs(t, err, ErrInvalidPublishedPost)
@@ -165,7 +174,7 @@ func TestServiceRejectsInvalidPublishedListData(t *testing.T) {
 // 且 version 被显式设为 1（而不是依赖 GORM 零值或数据库默认值）。
 func TestServiceCreateDraftForcesDraftAndVersion(t *testing.T) {
 	repository := &fakeRepository{}
-	service := NewService(repository, nil)
+	service := NewService(repository, nil, nil)
 
 	result, err := service.CreateDraft(context.Background(), CreatePostInput{
 		Title:     "  Hello Muggle  ", // 首尾空白应被归一化掉
@@ -193,7 +202,7 @@ func TestServiceCreateDraftForcesDraftAndVersion(t *testing.T) {
 // TestServiceCreateDraftPropagatesSlugTaken 验证创建时 slug 冲突会原样上抛。
 func TestServiceCreateDraftPropagatesSlugTaken(t *testing.T) {
 	repository := &fakeRepository{createErr: ErrSlugTaken}
-	service := NewService(repository, nil)
+	service := NewService(repository, nil, nil)
 
 	_, err := service.CreateDraft(context.Background(), CreatePostInput{
 		Title:     "t",
@@ -216,7 +225,7 @@ func TestServiceUpdateRejectsSlugChangeOnPublishedPost(t *testing.T) {
 			PublishedAt: &publishedAt,
 		},
 	}
-	service := NewService(repository, nil)
+	service := NewService(repository, nil, nil)
 
 	_, err := service.Update(context.Background(), 1, UpdatePostInput{
 		CreatePostInput: CreatePostInput{
@@ -243,7 +252,7 @@ func TestServiceUpdateAllowsSlugChangeOnDraft(t *testing.T) {
 			PublishedAt: nil, // 草稿没有发布时间
 		},
 	}
-	service := NewService(repository, nil)
+	service := NewService(repository, nil, nil)
 
 	_, err := service.Update(context.Background(), 1, UpdatePostInput{
 		CreatePostInput: CreatePostInput{
@@ -267,7 +276,7 @@ func TestServiceUpdatePropagatesVersionConflict(t *testing.T) {
 		byID:      &Post{ID: 1, Slug: "s", Status: StatusDraft},
 		updateErr: ErrVersionConflict,
 	}
-	service := NewService(repository, nil)
+	service := NewService(repository, nil, nil)
 
 	_, err := service.Update(context.Background(), 1, UpdatePostInput{
 		CreatePostInput: CreatePostInput{Title: "t", Slug: "s", Summary: "", ContentMD: "x"},
@@ -291,7 +300,7 @@ func TestServicePublishPropagatesErrors(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			repository := &fakeRepository{publishErr: tc.err}
-			service := NewService(repository, nil)
+			service := NewService(repository, nil, nil)
 
 			_, err := service.Publish(context.Background(), 1, 1)
 			assert.ErrorIs(t, err, tc.err)
@@ -302,7 +311,7 @@ func TestServicePublishPropagatesErrors(t *testing.T) {
 // TestServiceUnpublishPropagatesErrors 验证取消发布同样传播 Repository 错误。
 func TestServiceUnpublishPropagatesErrors(t *testing.T) {
 	repository := &fakeRepository{unpublishErr: ErrInvalidStatusTransition}
-	service := NewService(repository, nil)
+	service := NewService(repository, nil, nil)
 
 	_, err := service.Unpublish(context.Background(), 1, 1)
 	assert.ErrorIs(t, err, ErrInvalidStatusTransition)
@@ -379,7 +388,7 @@ func TestServiceDetailCacheHit(t *testing.T) {
 	// detailErr 故意设为错误：如果 Service 错误地回源 MySQL，测试会因此失败。
 	repository := &fakeRepository{detail: nil, detailErr: errors.New("repository should not be called")}
 	cache := &fakeCache{detail: &cached}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	detail, status, err := service.GetPublishedBySlug(context.Background(), "hello")
 
@@ -400,7 +409,7 @@ func TestServiceDetailCacheMiss(t *testing.T) {
 		PublishedAt: &publishedAt,
 	}}
 	cache := &fakeCache{detailErr: ErrCacheMiss}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	detail, status, err := service.GetPublishedBySlug(context.Background(), "hello")
 
@@ -417,7 +426,7 @@ func TestServiceDetailCacheBypass(t *testing.T) {
 		ID: 1, Slug: "hello", Status: StatusPublished, PublishedAt: &publishedAt,
 	}}
 	cache := &fakeCache{detailErr: errors.New("redis down")}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	detail, status, err := service.GetPublishedBySlug(context.Background(), "hello")
 
@@ -435,7 +444,7 @@ func TestServiceListCacheHit(t *testing.T) {
 	}
 	repository := &fakeRepository{listErr: errors.New("repository should not be called")}
 	cache := &fakeCache{version: 3, list: cached}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	items, meta, status, err := service.ListPublished(context.Background(), 1, 10)
 
@@ -453,7 +462,7 @@ func TestServiceListCacheMiss(t *testing.T) {
 		listTotal: 1,
 	}
 	cache := &fakeCache{version: 2, listErr: ErrCacheMiss}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	items, _, status, err := service.ListPublished(context.Background(), 1, 10)
 
@@ -471,7 +480,7 @@ func TestServiceListBypassOnVersionError(t *testing.T) {
 		listTotal: 1,
 	}
 	cache := &fakeCache{versionErr: errors.New("redis down")}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	items, _, status, err := service.ListPublished(context.Background(), 1, 10)
 
@@ -490,7 +499,7 @@ func TestServiceUpdatePublishedInvalidatesDetailAndList(t *testing.T) {
 		},
 	}
 	cache := &fakeCache{}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	_, err := service.Update(context.Background(), 1, UpdatePostInput{
 		CreatePostInput: CreatePostInput{Title: "New", Slug: "old-slug", Summary: "", ContentMD: "x"},
@@ -509,7 +518,7 @@ func TestServiceUpdateDraftInvalidatesDetailOnly(t *testing.T) {
 		byID: &Post{ID: 1, Slug: "old-slug", Status: StatusDraft, PublishedAt: nil},
 	}
 	cache := &fakeCache{}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	_, err := service.Update(context.Background(), 1, UpdatePostInput{
 		CreatePostInput: CreatePostInput{Title: "New", Slug: "new-slug", Summary: "", ContentMD: "x"},
@@ -528,7 +537,7 @@ func TestServicePublishIncrementsListVersion(t *testing.T) {
 		byID:          &Post{ID: 1, Slug: "s", Status: StatusPublished},
 	}
 	cache := &fakeCache{}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	_, err := service.Publish(context.Background(), 1, 1)
 
@@ -544,7 +553,7 @@ func TestServiceUnpublishDeletesDetailAndIncrementsList(t *testing.T) {
 		byID:            &Post{ID: 1, Slug: "s", Status: StatusDraft},
 	}
 	cache := &fakeCache{}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	_, err := service.Unpublish(context.Background(), 1, 1)
 
@@ -561,7 +570,7 @@ func TestServiceCacheInvalidationFailureDoesNotBlock(t *testing.T) {
 	}
 	// 删除详情缓存失败，但 Update 本身应照常成功。
 	cache := &fakeCache{delErr: errors.New("redis down"), incrErr: errors.New("redis down")}
-	service := NewService(repository, cache)
+	service := NewService(repository, cache, nil)
 
 	_, err := service.Update(context.Background(), 1, UpdatePostInput{
 		CreatePostInput: CreatePostInput{Title: "New", Slug: "s", Summary: "", ContentMD: "x"},
@@ -569,4 +578,132 @@ func TestServiceCacheInvalidationFailureDoesNotBlock(t *testing.T) {
 	})
 
 	require.NoError(t, err)
+}
+
+// ---- 浏览事件与浏览量测试（阶段六）----
+
+// fakeProducer 在内存中实现 ViewEventProducer，用于断言 Service 是否投递了事件。
+type fakeProducer struct {
+	publishedIDs []uint64 // 历次 PublishViewed 收到的文章 ID
+}
+
+// PublishViewed 记录投递的文章 ID。
+func (p *fakeProducer) PublishViewed(postID uint64) {
+	p.publishedIDs = append(p.publishedIDs, postID)
+}
+
+// TestServiceDetailCacheHitRefreshesViewCount 验证缓存命中时，浏览量仍实时回源
+// post_stats 刷新，而不是使用缓存里可能过期的计数（设计文档 7.1）。
+func TestServiceDetailCacheHitRefreshesViewCount(t *testing.T) {
+	// 缓存里的详情 ViewCount 是 0（写入时被清零），实时查询返回 42。
+	cached := PublicDetail{ID: 1, Slug: "hello", Title: "Hello"}
+	repository := &fakeRepository{viewCount: 42}
+	cache := &fakeCache{detail: &cached}
+	service := NewService(repository, cache, nil)
+
+	detail, status, err := service.GetPublishedBySlug(context.Background(), "hello")
+
+	require.NoError(t, err)
+	assert.Equal(t, CacheHit, status)
+	// 内容来自缓存，浏览量来自实时查询。
+	assert.Equal(t, "Hello", detail.Title)
+	assert.Equal(t, uint64(42), detail.ViewCount)
+}
+
+// TestServiceDetailCacheMissDoesNotCacheViewCount 验证未命中回填缓存时，
+// 写入缓存的副本 ViewCount 被清零，确保详情缓存不保存浏览量。
+func TestServiceDetailCacheMissDoesNotCacheViewCount(t *testing.T) {
+	publishedAt := time.Now().UTC()
+	repository := &fakeRepository{detail: &Post{
+		ID:          1,
+		Slug:        "hello",
+		Title:       "Hello",
+		ContentMD:   "# Hi",
+		Status:      StatusPublished,
+		PublishedAt: &publishedAt,
+		ViewCount:   99, // 数据库 LEFT JOIN 带出的真实计数
+	}}
+	// 记录 SetPostDetail 收到的副本，用于断言计数被清零。
+	var cachedDetail PublicDetail
+	cache := &fakeCache{detailErr: ErrCacheMiss}
+	recording := &recordingCache{inner: cache, onSetDetail: func(d PublicDetail) { cachedDetail = d }}
+	service := NewService(repository, recording, nil)
+
+	detail, status, err := service.GetPublishedBySlug(context.Background(), "hello")
+
+	require.NoError(t, err)
+	assert.Equal(t, CacheMiss, status)
+	// 返回给访客的详情带真实计数。
+	assert.Equal(t, uint64(99), detail.ViewCount)
+	// 但写进缓存的副本计数必须为 0。
+	assert.Equal(t, uint64(0), cachedDetail.ViewCount)
+}
+
+// TestServicePublishesViewEventOnDetailRead 验证成功读到详情后会投递浏览事件。
+func TestServicePublishesViewEventOnDetailRead(t *testing.T) {
+	publishedAt := time.Now().UTC()
+	repository := &fakeRepository{detail: &Post{
+		ID:          7,
+		Slug:        "hello",
+		Status:      StatusPublished,
+		PublishedAt: &publishedAt,
+	}}
+	producer := &fakeProducer{}
+	service := NewService(repository, nil, producer)
+
+	_, _, err := service.GetPublishedBySlug(context.Background(), "hello")
+
+	require.NoError(t, err)
+	require.Len(t, producer.publishedIDs, 1)
+	assert.Equal(t, uint64(7), producer.publishedIDs[0])
+}
+
+// TestServiceDoesNotPublishViewEventOnNotFound 验证文章不存在时不投递浏览事件。
+func TestServiceDoesNotPublishViewEventOnNotFound(t *testing.T) {
+	repository := &fakeRepository{detailErr: ErrNotFound}
+	producer := &fakeProducer{}
+	service := NewService(repository, nil, producer)
+
+	_, _, err := service.GetPublishedBySlug(context.Background(), "missing")
+
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.Empty(t, producer.publishedIDs, "读取失败不应投递浏览事件")
+}
+
+// recordingCache 包装 Cache，拦截 SetPostDetail 的入参用于断言。
+// 仅在需要检查“写入缓存的副本内容”时使用。
+type recordingCache struct {
+	inner       Cache
+	onSetDetail func(PublicDetail)
+}
+
+func (r *recordingCache) GetPostDetail(ctx context.Context, slug string) (*PublicDetail, error) {
+	return r.inner.GetPostDetail(ctx, slug)
+}
+
+func (r *recordingCache) SetPostDetail(ctx context.Context, slug string, detail PublicDetail) error {
+	if r.onSetDetail != nil {
+		r.onSetDetail(detail)
+	}
+	return r.inner.SetPostDetail(ctx, slug, detail)
+}
+
+func (r *recordingCache) DeletePostDetail(ctx context.Context, slug string) error {
+	return r.inner.DeletePostDetail(ctx, slug)
+}
+
+func (r *recordingCache) GetPostList(ctx context.Context, version uint64, page, pageSize int) (*CachedPostList, error) {
+	return r.inner.GetPostList(ctx, version, page, pageSize)
+}
+
+func (r *recordingCache) SetPostList(ctx context.Context, version uint64, page, pageSize int, list CachedPostList) error {
+	return r.inner.SetPostList(ctx, version, page, pageSize, list)
+}
+
+func (r *recordingCache) GetListVersion(ctx context.Context) (uint64, error) {
+	return r.inner.GetListVersion(ctx)
+}
+
+func (r *recordingCache) IncrementListVersion(ctx context.Context) error {
+	return r.inner.IncrementListVersion(ctx)
 }

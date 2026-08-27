@@ -40,6 +40,10 @@ type PublicListItem struct {
 
 // PublicDetail 是公开详情页允许返回的完整文章内容。
 // status、version 等内部字段仍然不会暴露给访客。
+//
+// ViewCount 是累计浏览量（阶段六新增）。注意：它不参与 Redis 详情缓存——
+// 缓存只保存正文等静态内容，浏览量始终实时回源 post_stats 读取，
+// 避免计数更新后缓存里长期显示旧值（设计文档 7.1）。
 type PublicDetail struct {
 	ID          uint64    `json:"id"`
 	Slug        string    `json:"slug"`
@@ -47,6 +51,7 @@ type PublicDetail struct {
 	Summary     string    `json:"summary"`
 	ContentMD   string    `json:"content_md"`
 	PublishedAt time.Time `json:"published_at"`
+	ViewCount   uint64    `json:"view_count"`
 }
 
 // PageMeta 告诉前端当前页、每页数量和总记录数。

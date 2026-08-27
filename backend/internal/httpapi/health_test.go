@@ -31,10 +31,21 @@ func (p fakeRedisPinger) Ping(_ context.Context) error {
 	return p.err
 }
 
+// fakeKafkaPinger 模拟 readiness 检查 Kafka 的可选探针（阶段六）。
+// 与 fakeRedisPinger 方法签名相同，都是 Ping(ctx) error；分开定义是为了
+// 在测试里语义清晰地表达“这里探的是 Kafka 而不是 Redis”。
+type fakeKafkaPinger struct {
+	err error
+}
+
+func (p fakeKafkaPinger) Ping(_ context.Context) error {
+	return p.err
+}
+
 func TestReadyWhenMySQLIsAvailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/ready", ready(fakePinger{}, nil))
+	router.GET("/ready", ready(fakePinger{}, nil, nil))
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/ready", nil)
 
@@ -47,7 +58,7 @@ func TestReadyWhenMySQLIsAvailable(t *testing.T) {
 func TestReadyWhenMySQLIsUnavailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/ready", ready(fakePinger{err: errors.New("mysql down")}, nil))
+	router.GET("/ready", ready(fakePinger{err: errors.New("mysql down")}, nil, nil))
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/ready", nil)
 
@@ -66,7 +77,7 @@ func TestReadyWhenMySQLIsUnavailable(t *testing.T) {
 func TestReadyRedisDownDoesNotFailReadiness(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/ready", ready(fakePinger{}, fakeRedisPinger{err: errors.New("redis down")}))
+	router.GET("/ready", ready(fakePinger{}, fakeRedisPinger{err: errors.New("redis down")}, nil))
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/ready", nil)
 
@@ -84,7 +95,7 @@ func TestReadyRedisDownDoesNotFailReadiness(t *testing.T) {
 func TestReadyRedisUp(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/ready", ready(fakePinger{}, fakeRedisPinger{}))
+	router.GET("/ready", ready(fakePinger{}, fakeRedisPinger{}, nil))
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/ready", nil)
 
@@ -94,6 +105,26 @@ func TestReadyRedisUp(t *testing.T) {
 	assert.JSONEq(
 		t,
 		`{"status":"ok","checks":{"mysql":"up","redis":"up"}}`,
+		response.Body.String(),
+	)
+}
+
+// TestReadyKafkaDownDoesNotFailReadiness 验证 Kafka 故障只标记 degraded，
+// 不拖垮整体就绪状态（设计文档 8.1：Redis/Kafka 故障只在 readiness 里标记，
+// 不让公开文章 API 整体下线）。
+func TestReadyKafkaDownDoesNotFailReadiness(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/ready", ready(fakePinger{}, nil, fakeKafkaPinger{err: errors.New("kafka down")}))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/ready", nil)
+
+	router.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.JSONEq(
+		t,
+		`{"status":"ok","checks":{"mysql":"up","kafka":"down"}}`,
 		response.Body.String(),
 	)
 }

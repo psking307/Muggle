@@ -49,3 +49,21 @@ auth:
   refresh_cookie_secure: false
   refresh_cookie_same_site: lax
   public_origin: "http://localhost:5173"
+
+# 阶段六：Kafka 异步浏览事件。Kafka 只承载“尽力而为”的浏览事件，
+# 不是业务事实来源；broker 不可用时 API 仍可正常读取文章、只可能少算浏览量。
+kafka:
+  # 开发环境指向本机映射端口；完整 Compose 环境里改用服务名 kafka:9092。
+  # 多个地址用逗号分隔（对应环境变量 KAFKA_BROKERS）。
+  brokers:
+    - "127.0.0.1:9092"
+  # 浏览事件主题，3 个分区，本地 replication factor 为 1（设计文档 7.2）。
+  topic: blog.post-viewed.v1
+  # Worker 消费事件使用的消费组名。
+  consumer_group: blog-view-counter-v1
+
+# 阶段六：独立 Worker 进程配置。Worker 与 API 共用上面的 MySQL/Kafka 配置，
+# 但拥有独立的健康检查监听地址（仅供 Compose/Kubernetes 探针使用）。
+worker:
+  http_addr: ":8081"
+  shutdown_timeout: 10s

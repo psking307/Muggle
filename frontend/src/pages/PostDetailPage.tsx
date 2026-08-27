@@ -85,6 +85,17 @@ export function PostDetailPage() {
             <Typography.Text type="secondary">
               {new Date(currentState.post.published_at).toLocaleString()}
             </Typography.Text>
+
+            {/* 阶段六：展示累计浏览量。
+                浏览事件由 API 异步投递到 Kafka、Worker 稍后落库，因此这里的
+                数字是“最终一致”的近似值，可能在打开页面的瞬间略有延迟。 */}
+            <div className="!mt-2 text-sm text-slate-500">
+              浏览量：{currentState.post.view_count}
+              <span className="ml-1 text-slate-400">
+                （最终一致，可能略有延迟）
+              </span>
+            </div>
+
             <Typography.Title className="!mt-3">
               {currentState.post.title}
             </Typography.Title>

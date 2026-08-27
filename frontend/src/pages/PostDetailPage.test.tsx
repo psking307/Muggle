@@ -55,6 +55,7 @@ describe("PostDetailPage", () => {
         summary: "阶段二公开文章",
         content_md: "# Hello\n\n正文来自 MySQL。",
         published_at: "2026-08-26T10:00:00Z",
+        view_count: 42,
       },
     });
 
@@ -65,6 +66,9 @@ describe("PostDetailPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("阶段二公开文章")).toBeInTheDocument();
     expect(screen.getByText(/正文来自 MySQL/)).toBeInTheDocument();
+    // 阶段六：浏览量应展示，且附带“最终一致”的说明。
+    expect(screen.getByText(/浏览量：42/)).toBeInTheDocument();
+    expect(screen.getByText(/最终一致/)).toBeInTheDocument();
     expect(mockedGetPost).toHaveBeenCalledWith(
       "hello-muggle",
       expect.any(AbortSignal),

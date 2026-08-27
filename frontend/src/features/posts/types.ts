@@ -9,6 +9,9 @@ export interface PostListItem {
 
 export interface PostDetail extends PostListItem {
   content_md: string;
+  // 累计浏览量（阶段六新增）。由后端通过 LEFT JOIN post_stats 实时返回，
+  // 是“最终一致”的近似值，可能比真实访问量略有延迟。
+  view_count: number;
 }
 
 export interface PageMeta {

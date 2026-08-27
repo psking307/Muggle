@@ -59,17 +59,40 @@ func (r *gormRepository) ListPublished(
 	return posts, total, nil
 }
 
-// FindPublishedBySlug 按 slug 查找已发布文章。
+// publishedPostWithCount 是详情读取用的内部结果结构。
+//
+// 它内嵌 Post（复用 posts 表的字段映射），再额外携带一个 view_count 列，
+// 用来接收 LEFT JOIN post_stats 得到的累计浏览量。之所以用独立结构而不是
+// 直接在 Post 上扫描，是因为 Post.ViewCount 标记了 gorm:"-"，GORM 不会把它
+// 当作可扫描列；这里用显式 column:view_count 的字段承接别名即可。
+type publishedPostWithCount struct {
+	Post
+	Count uint64 `gorm:"column:view_count"`
+}
+
+// FindPublishedBySlug 按 slug 查找已发布文章，并附带当前累计浏览量。
+//
+// 浏览量通过 LEFT JOIN post_stats 一次性带出（设计文档 6.6 第 4 点）：
+//   * LEFT JOIN 保证 post_stats 没有统计行的旧文章也能查到，不会因缺行而漏掉；
+//   * COALESCE(view_count, 0) 把“没有统计行”统一归一为 0。
+//
+// 由于详情内容缓存（Redis）不保存浏览量，这条 SQL 在缓存未命中时一次返回
+// 正文与计数；缓存命中时则由 GetViewCount 单独刷新计数。
 func (r *gormRepository) FindPublishedBySlug(
 	ctx context.Context,
 	slug string,
 ) (*Post, error) {
-	var result Post
+	var result publishedPostWithCount
 
 	err := r.db.
 		WithContext(ctx).
+		Table("posts").
+		// 显式选择 posts 的所有列，再附加 COALESCE 归一后的 view_count。
+		// 加 posts. 前缀是为了在 JOIN 后消除与其它表的列名歧义。
+		Select("posts.*, COALESCE(ps.view_count, 0) AS view_count").
+		Joins("LEFT JOIN post_stats ps ON ps.post_id = posts.id").
 		Where(
-			"slug = ? AND status = ? AND published_at IS NOT NULL",
+			"posts.slug = ? AND posts.status = ? AND posts.published_at IS NOT NULL",
 			slug,
 			StatusPublished,
 		).
@@ -83,7 +106,30 @@ func (r *gormRepository) FindPublishedBySlug(
 		return nil, fmt.Errorf("find published post by slug: %w", err)
 	}
 
-	return &result, nil
+	// 把独立结构里扫描到的浏览量回填到返回的 Post 上。
+	post := result.Post
+	post.ViewCount = result.Count
+	return &post, nil
+}
+
+// GetViewCount 读取文章当前累计浏览量；post_stats 无该文章统计行时返回 0。
+//
+// 详情缓存命中时调用：内容来自缓存，但浏览量必须实时回源 post_stats，
+// 避免计数更新后长时间显示旧值（设计文档 7.1）。
+func (r *gormRepository) GetViewCount(ctx context.Context, postID uint64) (uint64, error) {
+	var count uint64
+
+	// 用子查询 + COALESCE：没有统计行时子查询返回 NULL，COALESCE 归一为 0。
+	// 这种写法比 LEFT JOIN 更适合单值读取，语义也更直白。
+	err := r.db.WithContext(ctx).Raw(
+		"SELECT COALESCE((SELECT view_count FROM post_stats WHERE post_id = ?), 0)",
+		postID,
+	).Scan(&count).Error
+	if err != nil {
+		return 0, fmt.Errorf("get view count: %w", err)
+	}
+
+	return count, nil
 }
 
 // ---- 管理端 ----

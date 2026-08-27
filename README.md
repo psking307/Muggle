@@ -1,6 +1,6 @@
 # Muggle Tiny Blog
 
-Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶段 2：用 MySQL + GORM 打通“数据库中的已发布文章 → Gin API → React 页面”的第一条真实业务链路。
+Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶段 3：在公开文章读取之上，实现了管理员安全登录、Access JWT、Refresh Session 轮转、登录恢复与退出。
 
 ## 阶段 2 已实现
 
@@ -16,6 +16,20 @@ Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶�
 - Go 单元/Handler/Repository 集成测试和 Vitest 页面测试。
 
 阶段 2 不包含管理员登录、文章写入、Redis、Kafka、Zustand 和 ByteMD；这些属于后续阶段。
+
+## 阶段 3 已实现
+
+- `admins` 与 `refresh_sessions` 版本化 migration：状态 CHECK 约束、外键和唯一索引。
+- bcrypt 密码哈希；密码与哈希不进入日志和 API 响应。
+- 离线建号命令 `make admin-create`（v1.0 不提供网页注册管理员）。
+- 登录签发短期 Access JWT + 随机 Refresh Token；MySQL 只保存 Refresh Token 的 SHA-256。
+- Refresh Session 事务轮转：旧 Token 立即失效，重放/过期/撤销统一返回 401。
+- 登录、Refresh、退出、`/admin/me` 四个接口与 Bearer JWT 认证中间件。
+- Refresh Cookie 带 HttpOnly、SameSite、Path；Access Token 只存在前端内存（Zustand）。
+- Axios 请求拦截器附加 Token；响应层单次并发刷新，失败统一退出。
+- 登录页、管理路由守卫、刷新页面后的会话恢复。
+- 生产环境配置校验：拒绝弱 JWT 密钥、示例密钥、通配来源与非 Secure Cookie。
+- 覆盖错误密码、禁用账号、过期/伪造 JWT、轮转、重放、退出的自动化测试。
 
 ## 环境要求
 
@@ -44,15 +58,16 @@ cd frontend && npm install && cd ..
 
 根 Makefile 会把仓库根目录的 `.env` 注入 Go 进程和 Docker Compose。
 
-## 从零启动阶段 2
+## 从零启动阶段 3
 
 在仓库根目录依次运行：
 
 ```bash
-make dev-infra   # 1. 启动 MySQL，等待容器变为 healthy
-make migrate-up  # 2. 按版本创建数据库表
-make seed        # 3. 写入三篇开发数据，可安全重复执行
-make dev-api     # 4. 启动 Gin API：http://localhost:8080
+make dev-infra     # 1. 启动 MySQL，等待容器变为 healthy
+make migrate-up    # 2. 按版本创建数据库表（posts、admins、refresh_sessions）
+make seed          # 3. 写入三篇开发文章，可安全重复执行
+make admin-create  # 4. 交互式创建初始管理员（密码不回显）
+make dev-api       # 5. 启动 Gin API：http://localhost:8080
 ```
 
 另开一个 WSL 终端：
@@ -65,15 +80,17 @@ make dev-web     # 启动网页：http://localhost:5173
 可访问地址：
 
 - 文章列表：`http://localhost:5173/`
+- 管理登录：`http://localhost:5173/admin/login`（登录后进入 `/admin`）
 - 健康页：`http://localhost:5173/health`
 - Swagger UI：`http://localhost:8080/swagger/index.html`
 
 ## 常用命令
 
 ```bash
-make dev-infra        # 启动阶段 2 的 MySQL
+make dev-infra        # 启动 MySQL 开发容器
 make dev-api          # 在 WSL 直接运行 Gin API
 make dev-web          # 运行 Vite 前端开发服务器
+make admin-create     # 交互式创建初始管理员
 make migrate-up       # 执行尚未执行的 migration
 make migrate-down     # 回退一个 migration 版本
 make seed             # 写入开发 seed
@@ -81,7 +98,7 @@ make swagger          # 重新生成 OpenAPI 文件
 make fmt              # 格式化 Go 代码
 make lint             # go vet、ESLint、TypeScript 类型检查
 make test             # 后端单元/Handler测试和前端页面测试
-make test-integration # Repository 的 MySQL 集成测试
+make test-integration # post/admin Repository 的 MySQL 集成测试
 make build            # 构建 Go 二进制和 React 生产文件
 make compose-down     # 停止容器，但保留 MySQL volume
 ```
@@ -91,11 +108,18 @@ make compose-down     # 停止容器，但保留 MySQL volume
 所有业务 API 使用前缀 `/api/v1`：
 
 ```text
-GET /api/v1/health/live
-GET /api/v1/health/ready
-GET /api/v1/posts?page=1&page_size=10
-GET /api/v1/posts/:slug
+GET    /api/v1/health/live
+GET    /api/v1/health/ready
+GET    /api/v1/posts?page=1&page_size=10
+GET    /api/v1/posts/:slug
+
+POST   /api/v1/admin/session           # 登录：返回 Access Token，设置 Refresh Cookie
+POST   /api/v1/admin/session/refresh   # 轮转会话：旧 Refresh Token 立即失效
+DELETE /api/v1/admin/session           # 退出：撤销会话并清除 Cookie
+GET    /api/v1/admin/me                # 当前管理员摘要（需要 Bearer Token）
 ```
+
+除登录和 Refresh 外，管理 API 使用 `Authorization: Bearer <access-token>`；Refresh 与退出接口还会校验 `Origin` 请求头必须等于 `PUBLIC_ORIGIN`。
 
 列表响应包含 `data` 和分页 `meta`。错误响应固定包含 `code`、`message` 和用于查日志的 `request_id`。
 
@@ -126,32 +150,59 @@ curl -i "http://localhost:8080/api/v1/posts?page=0"
 3. 执行 `docker compose --env-file .env -f deploy/compose.yaml start mysql`。
 4. 等待 MySQL healthy 后，文章仍然存在，无需重新 seed。
 
+管理员认证验收（登录后拿到的 Token 与 Cookie 只在本次实验使用）：
+
+```bash
+# 登录：200，响应含 access_token，Set-Cookie 带 HttpOnly
+curl -i -c /tmp/cookies.txt -X POST http://localhost:8080/api/v1/admin/session \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"你的密码"}'
+
+# 错误密码：401 invalid_credentials（文案不区分“用户不存在”）
+# /admin/me 不带 Token：401；带 Bearer Token：200
+curl -i http://localhost:8080/api/v1/admin/me -H "Authorization: Bearer <access_token>"
+
+# Refresh：200 并下发新 Cookie；用旧 Cookie 再刷一次：401 invalid_session（重放被拒）
+curl -i -X POST http://localhost:8080/api/v1/admin/session/refresh \
+  -H 'Origin: http://localhost:5173' -b /tmp/cookies.txt
+
+# 退出：204 且 Cookie 被清空；退出后再 Refresh：401
+curl -i -X DELETE http://localhost:8080/api/v1/admin/session \
+  -H 'Origin: http://localhost:5173' -b /tmp/cookies.txt
+```
+
 DataGrip 使用 `localhost:3306`，数据库为 `tiny_blog`，账号密码取自本机 `.env`。
 
 ## 代码分层
 
 ```text
-React 页面
-  → Axios /api/v1
-  → Gin Router / Middleware
-  → Handler：读取 HTTP 参数，映射 HTTP 响应
-  → Service：执行“只有 published 可公开读取”等业务规则
-  → Repository：用 GORM 查询数据库
-  → MySQL：文章数据的唯一事实来源
+React 页面 / Zustand 认证状态
+  → Axios /api/v1（请求附加 Bearer Token，401 单次并发刷新）
+  → Gin Router / Middleware（Request ID → Access Log → Recovery → BearerAuth）
+  → Handler：读取 HTTP 参数，映射 HTTP 响应与 Cookie
+  → Service：登录校验、Refresh 轮转、账号状态规则
+  → Repository：用 GORM 查询数据库（Refresh 轮转在事务中完成）
+  → MySQL：文章、管理员与会话数据的唯一事实来源
 ```
 
 主要目录：
 
 ```text
-backend/docs/                       # 自动生成的 Swagger/OpenAPI
-backend/internal/httpapi/           # Router、健康检查、统一响应、Middleware
-backend/internal/platform/database/ # GORM/MySQL 技术适配
-backend/internal/post/              # 文章业务分层
-backend/migrations/                 # 版本化数据库结构
-backend/seeds/                      # 显式开发数据
-frontend/src/features/posts/        # 文章 API 类型和调用函数
-frontend/src/pages/                 # 列表页、详情页、健康页及页面测试
-deploy/compose.yaml                 # 阶段 2 MySQL 和 migration job
+backend/cmd/admin/                   # 离线创建管理员的命令
+backend/cmd/api/                     # API 进程入口
+backend/docs/                        # 自动生成的 Swagger/OpenAPI
+backend/internal/httpapi/            # Router、健康检查、统一响应、Middleware
+backend/internal/admin/              # 管理员认证业务分层
+backend/internal/post/               # 文章业务分层
+backend/internal/platform/database/  # GORM/MySQL 技术适配
+backend/internal/platform/security/  # bcrypt、JWT、Refresh Token 工具
+backend/migrations/                  # 版本化数据库结构
+backend/seeds/                       # 显式开发数据
+frontend/src/api/                    # Axios 实例与错误描述
+frontend/src/stores/                 # Zustand 认证状态与拦截器
+frontend/src/features/auth/          # 认证 API 与类型
+frontend/src/pages/                  # 公开页与管理页及页面测试
+deploy/compose.yaml                  # MySQL 和 migration job
 ```
 
 ## 安全与工程约束
@@ -162,3 +213,7 @@ deploy/compose.yaml                 # 阶段 2 MySQL 和 migration job
 - 所有 Repository 查询都传入 `context.Context`。
 - 草稿对公开请求统一表现为 404。
 - 前端按纯文本显示 Markdown 原文，不注入不安全 HTML。
+- 密码只保存 bcrypt 哈希；Refresh Token 只保存 SHA-256，Access Token 不进 LocalStorage。
+- Refresh Cookie 必须 HttpOnly；生产环境必须 Secure，且 JWT 密钥不得使用示例值。
+- 登录失败文案不区分“用户名不存在”和“密码错误”；日志禁止记录密码、Token 和 Cookie。
+- Refresh 每次轮转，旧 Token 立即失效；Refresh 与退出校验可信 Origin。

@@ -12,12 +12,13 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Config 是阶段 1 的总配置。
-// 它只包含应用信息、HTTP Server 和日志配置，不提前加入数据库等后续阶段内容。
+// Config 是 API 进程的总配置。
+// 阶段二在阶段一已有的应用、HTTP 和日志配置基础上加入 MySQL。
 type Config struct {
-	App  AppConfig  `mapstructure:"app"`
-	HTTP HTTPConfig `mapstructure:"http"`
-	Log  LogConfig  `mapstructure:"log"`
+	App   AppConfig   `mapstructure:"app"`
+	HTTP  HTTPConfig  `mapstructure:"http"`
+	Log   LogConfig   `mapstructure:"log"`
+	MySQL MySQLConfig `mapstructure:"mysql"`
 }
 
 // AppConfig 描述应用自身的信息。
@@ -51,6 +52,23 @@ type HTTPConfig struct {
 type LogConfig struct {
 	// Level 越高输出越少；当前允许 debug、info、warn 和 error。
 	Level string `mapstructure:"level" validate:"required,oneof=debug info warn error"`
+}
+
+// MySQLConfig 描述 API 连接 MySQL 以及管理连接池所需的配置。
+//
+// 密码没有代码默认值，必须由进程环境变量提供；这样即使误启动生产进程，
+// 也不会悄悄使用仓库中的示例密码连接数据库。
+type MySQLConfig struct {
+	Host string `mapstructure:"host" validate:"required"`
+	Port int    `mapstructure:"port" validate:"gte=1,lte=65535"`
+
+	Database string `mapstructure:"database" validate:"required"`
+	User     string `mapstructure:"user" validate:"required"`
+	Password string `mapstructure:"password" validate:"required"`
+
+	MaxOpenConns    int           `mapstructure:"max_open_conns" validate:"gte=1"`
+	MaxIdleConns    int           `mapstructure:"max_idle_conns" validate:"gte=0,ltefield=MaxOpenConns"`
+	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime" validate:"gt=0"`
 }
 
 // Load 从后端约定路径读取阶段 1 配置。
@@ -89,6 +107,14 @@ func loadFile(configFile string) (*Config, error) {
 		"http.write_timeout":       "HTTP_WRITE_TIMEOUT",
 		"http.idle_timeout":        "HTTP_IDLE_TIMEOUT",
 		"http.shutdown_timeout":    "HTTP_SHUTDOWN_TIMEOUT",
+		"mysql.host":               "MYSQL_HOST",
+		"mysql.port":               "MYSQL_PORT",
+		"mysql.database":           "MYSQL_DATABASE",
+		"mysql.user":               "MYSQL_USER",
+		"mysql.password":           "MYSQL_PASSWORD",
+		"mysql.max_open_conns":     "MYSQL_MAX_OPEN_CONNS",
+		"mysql.max_idle_conns":     "MYSQL_MAX_IDLE_CONNS",
+		"mysql.conn_max_lifetime":  "MYSQL_CONN_MAX_LIFETIME",
 	}
 
 	for key, envName := range bindings {
@@ -135,6 +161,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http.write_timeout", "15s")
 	v.SetDefault("http.idle_timeout", "60s")
 	v.SetDefault("http.shutdown_timeout", "10s")
+	v.SetDefault("mysql.host", "127.0.0.1")
+	v.SetDefault("mysql.port", 3306)
+	v.SetDefault("mysql.database", "tiny_blog")
+	v.SetDefault("mysql.user", "blog")
+	// 密码故意留空，使缺少 MYSQL_PASSWORD 的启动在校验阶段失败。
+	v.SetDefault("mysql.password", "")
+	v.SetDefault("mysql.max_open_conns", 20)
+	v.SetDefault("mysql.max_idle_conns", 10)
+	v.SetDefault("mysql.conn_max_lifetime", "30m")
 }
 
 // validateHTTPAddress 验证监听地址使用 host:port 格式，且端口位于有效范围内。

@@ -1,17 +1,20 @@
 .PHONY: dev fmt lint test build
 
+# 当前 WSL 的 Go 安装在 /usr/local/go；允许调用者用 GO=... 覆盖。
+GO ?= /usr/local/go/bin/go
+
 dev:
-	go run ./cmd/api
+	$(GO) run ./cmd/api
 
 fmt:
-	go fmt ./...
+	$(GO) fmt ./...
 
 lint:
-	go vet ./...
+	$(GO) vet ./...
 
 test:
-	go test ./...
+	$(GO) test ./...
 
 build:
 	mkdir -p bin
-	go build -o bin/api ./cmd/api
+	$(GO) build -o bin/api ./cmd/api

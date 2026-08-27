@@ -12,3 +12,15 @@ http:
   write_timeout: 15s
   idle_timeout: 60s
   shutdown_timeout: 10s
+
+mysql:
+  host: "127.0.0.1"
+  # 与 deploy/compose.yaml 映射的宿主机端口保持一致（MySQL 标准端口）。
+  port: 3306
+  database: tiny_blog
+  user: blog
+  # 密码只能由 MYSQL_PASSWORD 环境变量提供，不能提交到仓库。
+  password: ""
+  max_open_conns: 20
+  max_idle_conns: 10
+  conn_max_lifetime: 30m

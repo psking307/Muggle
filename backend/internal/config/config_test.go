@@ -22,6 +22,14 @@ var configEnvironmentNames = []string{
 	"HTTP_WRITE_TIMEOUT",
 	"HTTP_IDLE_TIMEOUT",
 	"HTTP_SHUTDOWN_TIMEOUT",
+	"MYSQL_HOST",
+	"MYSQL_PORT",
+	"MYSQL_DATABASE",
+	"MYSQL_USER",
+	"MYSQL_PASSWORD",
+	"MYSQL_MAX_OPEN_CONNS",
+	"MYSQL_MAX_IDLE_CONNS",
+	"MYSQL_CONN_MAX_LIFETIME",
 }
 
 // validTestConfig 是多项测试共用的一份完整且合法的 YAML 配置。
@@ -38,6 +46,15 @@ http:
   write_timeout: 15s
   idle_timeout: 60s
   shutdown_timeout: 10s
+mysql:
+  host: "127.0.0.1"
+  port: 3306
+  database: tiny_blog_test
+  user: test_blog
+  password: test-password
+  max_open_conns: 5
+  max_idle_conns: 2
+  conn_max_lifetime: 10m
 `
 
 // TestLoadFile 验证 loadFile 能读取 YAML，并把字符串形式的时长转换成 time.Duration。
@@ -60,6 +77,13 @@ func TestLoadFile(t *testing.T) {
 	assert.Equal(t, 15*time.Second, cfg.HTTP.WriteTimeout)
 	assert.Equal(t, 60*time.Second, cfg.HTTP.IdleTimeout)
 	assert.Equal(t, 10*time.Second, cfg.HTTP.ShutdownTimeout)
+	assert.Equal(t, "127.0.0.1", cfg.MySQL.Host)
+	assert.Equal(t, 3306, cfg.MySQL.Port)
+	assert.Equal(t, "tiny_blog_test", cfg.MySQL.Database)
+	assert.Equal(t, "test_blog", cfg.MySQL.User)
+	assert.Equal(t, 5, cfg.MySQL.MaxOpenConns)
+	assert.Equal(t, 2, cfg.MySQL.MaxIdleConns)
+	assert.Equal(t, 10*time.Minute, cfg.MySQL.ConnMaxLifetime)
 }
 
 // TestLoadFileUsesEnvironmentOverrides 验证环境变量的优先级高于 YAML 文件。
@@ -95,6 +119,15 @@ http:
   write_timeout: 15s
   idle_timeout: 60s
   shutdown_timeout: 10s
+mysql:
+  host: "127.0.0.1"
+  port: 3306
+  database: tiny_blog_test
+  user: test_blog
+  password: test-password
+  max_open_conns: 5
+  max_idle_conns: 2
+  conn_max_lifetime: 10m
 `)
 
 	// 使用下划线忽略失败情况下没有意义的配置对象，只检查返回的错误。

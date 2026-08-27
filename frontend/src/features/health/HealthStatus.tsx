@@ -118,7 +118,7 @@ export function HealthStatus() {
           <Alert
             showIcon
             type="success"
-            message="API 运行正常"
+            title="API 运行正常"
             description="前端已通过 Vite 代理成功连接到 Gin 健康检查接口。"
           />
         )}
@@ -127,7 +127,7 @@ export function HealthStatus() {
           <Alert
             showIcon
             type="error"
-            message="API 当前不可达"
+            title="API 当前不可达"
             description={state.message}
           />
         )}

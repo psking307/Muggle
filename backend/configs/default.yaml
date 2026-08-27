@@ -24,3 +24,15 @@ mysql:
   max_open_conns: 20
   max_idle_conns: 10
   conn_max_lifetime: 30m
+
+auth:
+  # 签发与验证 Access JWT 的 HMAC 密钥。
+  # 只能由 JWT_SECRET 环境变量提供；本地可用 `openssl rand -hex 32` 生成。
+  jwt_secret: ""
+  access_token_ttl: 15m
+  refresh_session_ttl: 168h
+  refresh_cookie_name: muggle_refresh
+  # 本地开发走 HTTP，不启用 Secure；生产环境由配置校验强制开启。
+  refresh_cookie_secure: false
+  refresh_cookie_same_site: lax
+  public_origin: "http://localhost:5173"

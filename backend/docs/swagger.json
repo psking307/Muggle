@@ -1,10 +1,10 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "Muggle Tiny Blog 阶段四 API：公开文章读取 + 管理员认证与会话 + 管理端写作与发布闭环。",
+        "description": "Muggle Tiny Blog 阶段七 API：公开文章读取（含异步浏览量）+ 管理员认证与会话 + 管理端写作与发布闭环。",
         "title": "Muggle API",
         "contact": {},
-        "version": "0.4.0"
+        "version": "0.7.0"
     },
     "basePath": "/api/v1",
     "paths": {

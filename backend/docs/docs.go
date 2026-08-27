@@ -1057,12 +1057,12 @@ const docTemplate = `{
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
-	Version:          "0.4.0",
+	Version:          "0.7.0",
 	Host:             "",
 	BasePath:         "/api/v1",
 	Schemes:          []string{},
 	Title:            "Muggle API",
-	Description:      "Muggle Tiny Blog 阶段四 API：公开文章读取 + 管理员认证与会话 + 管理端写作与发布闭环。",
+	Description:      "Muggle Tiny Blog 阶段七 API：公开文章读取（含异步浏览量）+ 管理员认证与会话 + 管理端写作与发布闭环。",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

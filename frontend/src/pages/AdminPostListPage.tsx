@@ -2,6 +2,7 @@ import {
   Alert,
   Button,
   Card,
+  Empty,
   Flex,
   Popconfirm,
   Table,
@@ -230,6 +231,12 @@ export function AdminPostListPage() {
             rowKey="id"
             columns={columns}
             dataSource={currentState.posts}
+            // 自定义空态：比 antd 默认的“暂无数据”更明确，引导用户去新建。
+            locale={{
+              emptyText: (
+                <Empty description="还没有文章，点击右上角「新建文章」开始写作" />
+              ),
+            }}
             pagination={{
               current: currentState.meta.page,
               pageSize: currentState.meta.page_size,

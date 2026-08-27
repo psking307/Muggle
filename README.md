@@ -1,6 +1,6 @@
 # Muggle Tiny Blog
 
-Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶段 6：在 Redis Cache-Aside 之上，用 Kafka + 独立 Worker 实现了“读取文章 → 浏览事件 → 幂等更新浏览量”的异步链路。
+Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶段 7：在 Kafka 异步浏览量之上，把系统收口为契约一致、可重复测试、可进入容器化的发布候选版本（统一错误契约、安全加固、CI 质量门禁）。
 
 ## 阶段 2 已实现
 
@@ -71,6 +71,18 @@ Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶�
 - 测试覆盖事件序列化、消费者决策（非法/重复/失败）、幂等落库集成测试。
 
 **已知限制（有意保留的权衡）**：Kafka 不可用期间浏览事件会丢失、少算浏览量；这是学习阶段为了不把浏览量升级为文章主事务而保留的行为，不引入 Transactional Outbox。
+
+## 阶段 7 已实现
+
+- **契约统一**：成功响应外壳、分页 `meta`、错误码/状态码映射全部统一，并写入 `docs/api.md`。
+- **Swagger 同步**：重新生成 `backend/docs/`（含 `view_count`），CI 里用 `git diff --exit-code` 检查生成文件不落后于代码。
+- **安全加固**：统一安全响应头、CORS 只放行可信来源、请求体大小限制（约 2MB）、不信任任意 `X-Forwarded-*` 代理头。
+- **前端状态补齐**：`describeApiProblem` 覆盖 401（登录失效）、503（依赖不可用）、offline（设备离线）等状态；管理列表自定义空态。
+- **CI 质量门禁**（`.github/workflows/`）：backend（gofmt/vet/test/build/swagger 检查）、frontend（lint/typecheck/test/build）、integration（空 MySQL 从零 migration + Repository 集成测试）。
+- **Kafka 集成测试**（手动触发 workflow 或 `make test-kafka-integration`）：生产者 → 消费者端到端往返 + 幂等落库。
+- **文档**：新增 `docs/api.md` 与 `docs/architecture.md`。
+
+阶段 7 不新增业务功能与基础设施，只做收口；下一阶段进入 Nginx + 完整 Docker Compose。
 
 ## 环境要求
 

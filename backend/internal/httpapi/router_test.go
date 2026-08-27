@@ -16,7 +16,7 @@ func newTestRouter() *gin.Engine {
 	// TestMode 会关闭 Gin 面向开发者的调试提示，使测试输出保持简洁。
 	gin.SetMode(gin.TestMode)
 	// zap.NewNop 返回一个接收日志但不实际输出的日志器，测试时不会刷出访问日志。
-	return NewRouter(zap.NewNop())
+	return NewRouter(zap.NewNop(), "http://localhost:5173")
 }
 
 // TestLive 验证存活探针的状态码、JSON 内容以及请求编号响应头。

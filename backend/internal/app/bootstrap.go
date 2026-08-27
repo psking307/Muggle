@@ -127,7 +127,8 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 	)
 
 	// Router 先安装全局中间件和 live，再由各业务模块注册自己的路由。
-	router := httpapi.NewRouter(log)
+	// NewRouter 需要 PublicOrigin，用于 CORS 中间件精确放行可信前端来源。
+	router := httpapi.NewRouter(log, cfg.Auth.PublicOrigin)
 	if cfg.App.Env == "development" {
 		// Swagger 只在开发环境开放，避免生产环境默认暴露内部契约页面。
 		httpapi.RegisterSwagger(router)

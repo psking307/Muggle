@@ -1,12 +1,17 @@
 import axios from "axios";
 
 // ApiProblem 把 Axios 的技术错误转换成页面可以理解的有限状态。
+// 阶段七补齐了 401（登录失效）、503（依赖不可用）与 offline（设备离线）三种状态，
+// 让每个数据页面都能针对性地提示，而不是统统落到笼统的“未知错误”。
 export type ApiProblem =
   | { kind: "not-found"; message: string }
   | { kind: "bad-request"; message: string }
   | { kind: "conflict"; message: string }
+  | { kind: "unauthorized"; message: string }
+  | { kind: "unavailable"; message: string }
   | { kind: "server"; message: string }
   | { kind: "network"; message: string }
+  | { kind: "offline"; message: string }
   | { kind: "timeout"; message: string }
   | { kind: "unknown"; message: string };
 
@@ -28,6 +33,15 @@ export function describeApiProblem(error: unknown): ApiProblem {
     return {
       kind: "unknown",
       message: "发生了未知错误，请稍后重试。",
+    };
+  }
+
+  // 设备离线优先判断：浏览器能直接告诉我们网络是否断开，比根据错误码推断更可靠。
+  // jsdom/测试环境里 navigator.onLine 默认为 true，不会误触发该分支。
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return {
+      kind: "offline",
+      message: "当前设备似乎已离线，请检查网络连接后重试。",
     };
   }
 
@@ -60,11 +74,29 @@ export function describeApiProblem(error: unknown): ApiProblem {
     };
   }
 
+  // 401 表示 Access Token 失效且 Refresh 也未能续期。正常情况下认证状态层
+  // 会尝试单次并发刷新并重放请求；走到这里说明会话已不可恢复，需要重新登录。
+  if (error.response.status === 401) {
+    return {
+      kind: "unauthorized",
+      message: "登录已失效，请重新登录。",
+    };
+  }
+
   // 409 表示版本冲突或 slug 冲突（乐观锁 / 唯一索引），提示用户刷新后重试。
   if (error.response.status === 409) {
     return {
       kind: "conflict",
       message: "文章已被其他操作修改或 slug 已占用，请刷新后重试。",
+    };
+  }
+
+  // 503 单独区分：后端明确表示“必要依赖暂时不可用”（如 MySQL 就绪检查失败），
+  // 这与普通 500 内部错误不同，提示文案也应区分开。
+  if (error.response.status === 503) {
+    return {
+      kind: "unavailable",
+      message: "服务依赖暂时不可用，请稍后重试。",
     };
   }
 

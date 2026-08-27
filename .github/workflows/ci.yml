@@ -1,0 +1,133 @@
+name: CI
+
+# 阶段七：质量门禁。任何 push 到 main 或 pull request 都会触发，
+# 用于阻止编译失败、测试失败、前端类型错误、migration 失败和过期 OpenAPI 进入仓库。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (fmt / vet / test / build / swagger)
+    runs-on: ubuntu-latest
+    # 所有 run 命令默认在 backend 子目录执行，避免每个步骤都写 cd。
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      # go-version-file 读取 backend/go.mod 里的 go 版本，避免在多个地方重复声明版本。
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      # gofmt 用只读方式检查（-l 列出未格式化的文件），而不是直接改写。
+      - name: Check gofmt
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "以下文件未通过 gofmt："
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run unit tests
+        run: go test ./...
+
+      - name: Build binaries
+        run: go build ./cmd/api ./cmd/worker ./cmd/admin
+
+      # 用与 go.mod 一致的 swag 版本重新生成文档，并对比是否有差异：
+      # 若有差异说明开发者改了 DTO/接口注释却忘了更新生成的 OpenAPI 文件。
+      - name: Check Swagger is up to date
+        run: |
+          go install github.com/swaggo/swag/cmd/swag@v1.16.6
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          swag init -g main.go \
+            --dir cmd/api,internal/httpapi,internal/httpapi/middleware,internal/httpapi/response,internal/post,internal/admin \
+            --parseInternal --output docs
+          git diff --exit-code docs
+
+  frontend:
+    name: Frontend (lint / typecheck / test / build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      # Vite 8 要求 Node >= 22.12，这里固定用 22 LTS。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+  integration:
+    name: Integration (MySQL + migrations + repo tests)
+    runs-on: ubuntu-latest
+    # 用 service 容器起一个空的 MySQL，验证“全新数据库可以从零 migration 并跑通仓库集成测试”。
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: tiny_blog
+          MYSQL_USER: blog
+          MYSQL_PASSWORD: change-me
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
+          --health-start-period 60s
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      # 用与 compose 一致的 migrate v4.19.1 从零执行全部 migration。
+      - name: Run migrations
+        run: |
+          go install -tags 'mysql' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.19.1
+          "$(go env GOPATH)/bin/migrate" \
+            -path backend/migrations \
+            -database "mysql://blog:change-me@tcp(127.0.0.1:3306)/tiny_blog?multiStatements=true" \
+            up
+
+      # 只跑需要真实 MySQL 的 Repository 集成测试；Redis/Kafka 用例未提供地址时会自动 Skip。
+      - name: Run repository integration tests
+        env:
+          MYSQL_TEST_DSN: "blog:change-me@tcp(127.0.0.1:3306)/tiny_blog?charset=utf8mb4&parseTime=true&loc=UTC"
+        run: |
+          cd backend
+          go test -tags=integration ./internal/post ./internal/admin ./internal/view -v

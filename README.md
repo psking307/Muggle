@@ -1,6 +1,6 @@
 # Muggle Tiny Blog
 
-Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶段 4：在认证与公开读取之上，实现了从登录、创建草稿、ByteMD 编辑、发布到公开阅读、取消发布的完整写作闭环。
+Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶段 5：在写作闭环之上，为公开文章列表与详情增加了可删除、可重建、故障可降级的 Redis Cache-Aside 缓存。
 
 ## 阶段 2 已实现
 
@@ -42,7 +42,19 @@ Muggle 是一个按阶段实现的 Tiny Blog Lab。当前仓库已经完成阶�
 - 管理后台顶部导航布局：文章管理列表、新建、编辑页面，处理 401/404/409/保存中/发布中。
 - 补齐 Service / Handler / Repository 集成测试与前端页面测试。
 
-阶段 4 不包含 Redis、Kafka 与 Worker；这些属于后续阶段。
+阶段 4 不包含 Kafka 与 Worker；这些属于后续阶段。
+
+## 阶段 5 已实现
+
+- Docker Compose 加入 Redis（`dev` profile），映射 `127.0.0.1:6379`，不挂持久卷（缓存可随时清空重建）。
+- 强类型 Redis 配置 + 短超时 go-redis 客户端；启动 Ping 失败只记录警告，不阻止 API 启动。
+- `Cache` 接口与 Redis 适配器分离：Service 不依赖 go-redis 类型，测试用内存 fake 替换。
+- 详情 Cache-Aside（键 `post:slug:{slug}`，TTL 5 分钟，不含浏览量）；列表 Cache-Aside + 列表版本号（键 `posts:list:v{version}:{page}:{size}`，TTL 1 分钟）。
+- 公开读成功响应带 `X-Cache: HIT / MISS / BYPASS` 头，便于观察缓存行为。
+- 缓存失效：编辑文章删除新旧 slug 详情缓存；编辑已发布文章、发布、取消发布都会递增列表版本号。
+- 取消发布会删除详情缓存，避免已下线文章在 TTL 内仍被缓存命中。
+- Redis 故障时记录降级日志并回源 MySQL；`/health/ready` 把 Redis 标记为 `down` 但不拖垮整体就绪。
+- 测试覆盖命中/未命中/降级三态、写缓存失败、失效与 Redis 不可达场景。
 
 ## 环境要求
 
@@ -71,12 +83,12 @@ cd frontend && npm install && cd ..
 
 根 Makefile 会把仓库根目录的 `.env` 注入 Go 进程和 Docker Compose。
 
-## 从零启动阶段 4
+## 从零启动阶段 5
 
 在仓库根目录依次运行：
 
 ```bash
-make dev-infra     # 1. 启动 MySQL，等待容器变为 healthy
+make dev-infra     # 1. 启动 MySQL 与 Redis，等待容器变为 healthy
 make migrate-up    # 2. 按版本创建数据库表（posts、admins、refresh_sessions）
 make seed          # 3. 写入三篇开发文章，可安全重复执行
 make admin-create  # 4. 交互式创建初始管理员（密码不回显）
@@ -100,7 +112,7 @@ make dev-web     # 启动网页：http://localhost:5173
 ## 常用命令
 
 ```bash
-make dev-infra        # 启动 MySQL 开发容器
+make dev-infra        # 启动 MySQL、Redis 开发容器
 make dev-api          # 在 WSL 直接运行 Gin API
 make dev-web          # 运行 Vite 前端开发服务器
 make admin-create     # 交互式创建初始管理员
@@ -111,7 +123,7 @@ make swagger          # 重新生成 OpenAPI 文件
 make fmt              # 格式化 Go 代码
 make lint             # go vet、ESLint、TypeScript 类型检查
 make test             # 后端单元/Handler测试和前端页面测试
-make test-integration # post/admin Repository 的 MySQL 集成测试
+make test-integration # post/admin 的 MySQL 集成测试 + post 的 Redis 集成测试
 make build            # 构建 Go 二进制和 React 生产文件
 make compose-down     # 停止容器，但保留 MySQL volume
 ```
@@ -215,6 +227,26 @@ curl -i -X POST http://localhost:8080/api/v1/admin/posts/4/unpublish \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"version":2}'
 ```
 
+Redis 缓存验收：
+
+```bash
+# 第一次请求详情：X-Cache: MISS（回源 MySQL 并写缓存）
+curl -i http://localhost:8080/api/v1/posts/hello-muggle
+# 第二次请求同一详情：X-Cache: HIT（直接命中缓存）
+curl -i http://localhost:8080/api/v1/posts/hello-muggle
+
+# 停止 Redis 后再请求：X-Cache: BYPASS，公开文章仍从 MySQL 正常返回
+docker compose --env-file .env -f deploy/compose.yaml stop redis
+curl -i http://localhost:8080/api/v1/posts/hello-muggle
+docker compose --env-file .env -f deploy/compose.yaml start redis
+```
+
+预期结果：
+
+- 第一次详情请求 `X-Cache: MISS`，第二次 `X-Cache: HIT`。
+- 停止 Redis 后公开文章仍可读（`X-Cache: BYPASS`），管理员登录与 Refresh 不受影响。
+- 清空 Redis（`redis-cli flushall`）不丢失任何业务数据，公开文章会自动回源重建缓存。
+
 DataGrip 使用 `localhost:3306`，数据库为 `tiny_blog`，账号密码取自本机 `.env`。
 
 ## 代码分层
@@ -224,7 +256,8 @@ React 页面 / Zustand 认证状态
   → Axios /api/v1（请求附加 Bearer Token，401 单次并发刷新）
   → Gin Router / Middleware（Request ID → Access Log → Recovery → BearerAuth）
   → Handler：读取 HTTP 参数，映射 HTTP 响应与 Cookie
-  → Service：认证规则、文章状态流转、乐观锁、slug 锁定
+  → Service：认证规则、文章状态流转、乐观锁、slug 锁定、缓存失效
+  → Cache（Redis 适配器）：公开文章的 Cache-Aside 缓存，故障时降级回源
   → Repository：用 GORM 查询数据库（Refresh 轮转在事务中完成）
   → MySQL：文章、管理员与会话数据的唯一事实来源
 ```
@@ -239,6 +272,7 @@ backend/internal/httpapi/            # Router、健康检查、统一响应、Mi
 backend/internal/admin/              # 管理员认证业务分层
 backend/internal/post/               # 文章业务分层
 backend/internal/platform/database/  # GORM/MySQL 技术适配
+backend/internal/platform/rediscache/ # go-redis 技术适配
 backend/internal/platform/security/  # bcrypt、JWT、Refresh Token 工具
 backend/migrations/                  # 版本化数据库结构
 backend/seeds/                       # 显式开发数据
@@ -264,3 +298,4 @@ deploy/compose.yaml                  # MySQL 和 migration job
 - Refresh Cookie 必须 HttpOnly；生产环境必须 Secure，且 JWT 密钥不得使用示例值。
 - 登录失败文案不区分“用户名不存在”和“密码错误”；日志禁止记录密码、Token 和 Cookie。
 - Refresh 每次轮转，旧 Token 立即失效；Refresh 与退出校验可信 Origin。
+- MySQL 是业务事实来源；Redis 只保存可删除、可重建的公开文章缓存，Redis 故障降级回源 MySQL。

@@ -42,6 +42,26 @@ services:
       retries: 30
       start_period: 60s
 
+  redis:
+    # 公开文章缓存。Redis 只保存可删除、可重建的缓存数据，不挂持久卷，
+    # 因此容器删除后数据丢失也无所谓——重新启动后由 API 回源 MySQL 重建。
+    image: redis:7-alpine
+    profiles: ["dev"]
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      # 只允许本机访问，不把缓存端口暴露到局域网。
+      - target: 6379
+        # 宿主机端口与容器端口一致，使用 Redis 标准端口 6379。
+        published: "6379"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      # 用 redis-cli ping 探测：Redis 正常时返回 PONG。
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   migrate:
     # 迁移工具只在 make migrate-* 时临时运行，不会常驻。
     image: migrate/migrate:v4.19.1

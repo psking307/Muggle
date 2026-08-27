@@ -16,12 +16,14 @@ import (
 
 // Config 是 API 进程的总配置。
 // 阶段二在阶段一已有的应用、HTTP 和日志配置基础上加入 MySQL，
-// 阶段三继续加入管理员认证所需的 JWT 与 Refresh Cookie 配置。
+// 阶段三继续加入管理员认证所需的 JWT 与 Refresh Cookie 配置，
+// 阶段五再为公开文章缓存加入 Redis。
 type Config struct {
 	App   AppConfig   `mapstructure:"app"`
 	HTTP  HTTPConfig  `mapstructure:"http"`
 	Log   LogConfig   `mapstructure:"log"`
 	MySQL MySQLConfig `mapstructure:"mysql"`
+	Redis RedisConfig `mapstructure:"redis"`
 	Auth  AuthConfig  `mapstructure:"auth"`
 }
 
@@ -73,6 +75,36 @@ type MySQLConfig struct {
 	MaxOpenConns    int           `mapstructure:"max_open_conns" validate:"gte=1"`
 	MaxIdleConns    int           `mapstructure:"max_idle_conns" validate:"gte=0,ltefield=MaxOpenConns"`
 	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime" validate:"gt=0"`
+}
+
+// RedisConfig 描述 API 连接 Redis 所需的配置。
+//
+// 与 MySQL 不同，Redis 只是「可删除、可重建」的缓存，不是业务事实来源，
+// 因此：
+//   - Password 允许为空（本地开发通常不设密码）；
+//   - 没有连接池大小等额外参数（缓存场景默认值已够用，避免过度配置）。
+//
+// 各超时都取短值，保证单个缓存操作不会长时间阻塞请求：一旦 Redis 变慢或
+// 失联，请求能尽快进入降级分支（回源 MySQL），而不是卡在等待 Redis 响应上。
+type RedisConfig struct {
+	// Addr 是 Redis 地址，格式 host:port，例如 "127.0.0.1:6379"。
+	// 开发环境用本机地址；容器环境用服务名（redis:6379）。
+	Addr string `mapstructure:"addr" validate:"required"`
+
+	// Password 是 Redis 认证密码，本地开发可留空。
+	Password string `mapstructure:"password"`
+
+	// DB 是 Redis 数据库编号，默认 0。
+	DB int `mapstructure:"db" validate:"gte=0"`
+
+	// DialTimeout 是建立 TCP 连接的最长等待时间。
+	DialTimeout time.Duration `mapstructure:"dial_timeout" validate:"gt=0"`
+
+	// ReadTimeout 是等待 Redis 返回响应的最长读取时间。
+	ReadTimeout time.Duration `mapstructure:"read_timeout" validate:"gt=0"`
+
+	// WriteTimeout 是向 Redis 写入命令的最长等待时间。
+	WriteTimeout time.Duration `mapstructure:"write_timeout" validate:"gt=0"`
 }
 
 // AuthConfig 描述管理员认证所需的全部配置。
@@ -154,6 +186,12 @@ func loadFile(configFile string) (*Config, error) {
 		"mysql.max_open_conns":          "MYSQL_MAX_OPEN_CONNS",
 		"mysql.max_idle_conns":          "MYSQL_MAX_IDLE_CONNS",
 		"mysql.conn_max_lifetime":       "MYSQL_CONN_MAX_LIFETIME",
+		"redis.addr":                    "REDIS_ADDR",
+		"redis.password":                "REDIS_PASSWORD",
+		"redis.db":                      "REDIS_DB",
+		"redis.dial_timeout":            "REDIS_DIAL_TIMEOUT",
+		"redis.read_timeout":            "REDIS_READ_TIMEOUT",
+		"redis.write_timeout":           "REDIS_WRITE_TIMEOUT",
 		"auth.jwt_secret":               "JWT_SECRET",
 		"auth.access_token_ttl":         "ACCESS_TOKEN_TTL",
 		"auth.refresh_session_ttl":      "REFRESH_SESSION_TTL",
@@ -230,6 +268,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("mysql.max_open_conns", 20)
 	v.SetDefault("mysql.max_idle_conns", 10)
 	v.SetDefault("mysql.conn_max_lifetime", "30m")
+
+	// Redis 是可选缓存，地址默认指向本机标准端口；密码默认为空（本地开发）。
+	// 各超时取短值，便于 Redis 故障时快速降级回源 MySQL。
+	v.SetDefault("redis.addr", "127.0.0.1:6379")
+	v.SetDefault("redis.password", "")
+	v.SetDefault("redis.db", 0)
+	v.SetDefault("redis.dial_timeout", "1s")
+	v.SetDefault("redis.read_timeout", "500ms")
+	v.SetDefault("redis.write_timeout", "500ms")
 
 	// JWT 密钥与数据库密码同理，必须来自环境变量，代码里不留任何默认值。
 	v.SetDefault("auth.jwt_secret", "")

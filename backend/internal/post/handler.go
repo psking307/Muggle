@@ -32,6 +32,7 @@ func NewHandler(service PublicService, log *zap.Logger) *Handler {
 // @Param page query int false "页码，默认 1" minimum(1)
 // @Param page_size query int false "每页数量，默认 10" minimum(1) maximum(100)
 // @Success 200 {object} ListResponse
+// @Header 200 {string} X-Cache "缓存命中状态：HIT / MISS / BYPASS"
 // @Failure 400 {object} response.ErrorResponse
 // @Failure 500 {object} response.ErrorResponse
 // @Router /posts [get]
@@ -60,7 +61,7 @@ func (h *Handler) ListPublished(c *gin.Context) {
 		return
 	}
 
-	items, meta, err := h.service.ListPublished(
+	items, meta, status, err := h.service.ListPublished(
 		c.Request.Context(),
 		query.Page,
 		query.PageSize,
@@ -77,6 +78,8 @@ func (h *Handler) ListPublished(c *gin.Context) {
 		return
 	}
 
+	// X-Cache 只在成功响应时返回，用于观察缓存命中/未命中/降级情况。
+	c.Header("X-Cache", string(status))
 	c.JSON(http.StatusOK, ListResponse{
 		Data: items,
 		Meta: meta,
@@ -89,6 +92,7 @@ func (h *Handler) ListPublished(c *gin.Context) {
 // @Produce json
 // @Param slug path string true "文章 slug"
 // @Success 200 {object} DetailResponse
+// @Header 200 {string} X-Cache "缓存命中状态：HIT / MISS / BYPASS"
 // @Failure 400 {object} response.ErrorResponse
 // @Failure 404 {object} response.ErrorResponse
 // @Failure 500 {object} response.ErrorResponse
@@ -100,7 +104,7 @@ func (h *Handler) GetPublished(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.GetPublishedBySlug(c.Request.Context(), slug)
+	result, status, err := h.service.GetPublishedBySlug(c.Request.Context(), slug)
 	if errors.Is(err, ErrNotFound) {
 		// 草稿和真正不存在的文章使用相同 404，避免泄露草稿。
 		response.Error(c, http.StatusNotFound, "post_not_found", "文章不存在")
@@ -121,5 +125,7 @@ func (h *Handler) GetPublished(c *gin.Context) {
 		return
 	}
 
+	// X-Cache 只在成功响应时返回，用于观察缓存命中/未命中/降级情况。
+	c.Header("X-Cache", string(status))
 	c.JSON(http.StatusOK, DetailResponse{Data: result})
 }

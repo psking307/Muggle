@@ -15,7 +15,9 @@ import (
 	"github.com/psking307/Muggle/backend/internal/httpapi"
 	"github.com/psking307/Muggle/backend/internal/httpapi/middleware"
 	"github.com/psking307/Muggle/backend/internal/platform/database"
+	"github.com/psking307/Muggle/backend/internal/platform/rediscache"
 	"github.com/psking307/Muggle/backend/internal/post"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
 
@@ -45,11 +47,31 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 		}
 	}()
 
+	// 阶段五：创建 Redis 客户端（可选缓存）。
+	//
+	// 与 MySQL 不同，Redis 失败不能阻止启动：它只是缓存，公开文章可以
+	// 降级回源 MySQL。因此 New 返回的 err 只记录警告，进程继续运行；
+	// go-redis 客户端会在后续请求中自动重连，Redis 恢复后缓存自动生效。
+	redisClient, err := rediscache.New(cfg.Redis)
+	if err != nil {
+		log.Warn("redis unavailable at startup, cache will degrade to MySQL",
+			zap.String("addr", cfg.Redis.Addr),
+			zap.Error(err),
+		)
+	}
+	defer func() {
+		// Close 是幂等的：即使 New 时 Ping 失败，客户端也已创建，仍需要关闭。
+		if err := redisClient.Close(); err != nil {
+			log.Error("failed to close Redis", zap.Error(err))
+		}
+	}()
+
 	// 按 Repository -> Service -> Handler 的方向组装文章业务依赖。
 	// postService 同时实现公开读（PublicService）与管理写（AdminService）两个接口，
 	// 因此下面分别构造公开 Handler 与管理 Handler，共用同一个 Service 与连接池。
 	postRepository := post.NewGORMRepository(db)
-	postService := post.NewService(postRepository)
+	postCache := post.NewRedisCache(redisClient, log)
+	postService := post.NewService(postRepository, postCache)
 	postHandler := post.NewHandler(postService, log)
 	postAdminHandler := post.NewAdminHandler(postService, log)
 
@@ -82,7 +104,7 @@ func Run(cfg *config.Config, log *zap.Logger) error {
 		httpapi.RegisterSwagger(router)
 	}
 	apiV1 := router.Group("/api/v1")
-	httpapi.RegisterReadyRoute(apiV1, sqlDB)
+	httpapi.RegisterReadyRoute(apiV1, sqlDB, &redisPinger{client: redisClient})
 	post.RegisterPublicRoutes(apiV1, postHandler)
 
 	// BearerAuth 使用与签发端相同的 JWT 密钥；只有验证通过的管理请求
@@ -177,4 +199,18 @@ func parseSameSite(value string) http.SameSite {
 	default:
 		return http.SameSiteLaxMode
 	}
+}
+
+// redisPinger 把 go-redis 的 Ping 适配成 httpapi.RedisPinger 需要的 error 语义。
+//
+// go-redis 的 Ping 返回 *redis.StatusCmd（命令对象），而 readiness 探针只需要
+// 一个「成功 / 失败」的 error。这个薄适配器让 bootstrap 无需在别处再做转换，
+// 也避免 httpapi 包直接 import go-redis。
+type redisPinger struct {
+	client *redis.Client
+}
+
+// Ping 执行一次 Redis PING 探测，把命令错误转换成 error。
+func (p *redisPinger) Ping(ctx context.Context) error {
+	return p.client.Ping(ctx).Err()
 }

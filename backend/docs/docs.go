@@ -633,6 +633,12 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/post.ListResponse"
+                        },
+                        "headers": {
+                            "X-Cache": {
+                                "type": "string",
+                                "description": "缓存命中状态：HIT / MISS / BYPASS"
+                            }
                         }
                     },
                     "400": {
@@ -673,6 +679,12 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/post.DetailResponse"
+                        },
+                        "headers": {
+                            "X-Cache": {
+                                "type": "string",
+                                "description": "缓存命中状态：HIT / MISS / BYPASS"
+                            }
                         }
                     },
                     "400": {
@@ -760,6 +772,9 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "mysql": {
+                    "type": "string"
+                },
+                "redis": {
                     "type": "string"
                 }
             }

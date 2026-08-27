@@ -25,6 +25,19 @@ mysql:
   max_idle_conns: 10
   conn_max_lifetime: 30m
 
+# 阶段五：公开文章缓存。Redis 只保存可删除、可重建的缓存，不是业务事实来源，
+# 因此即使清空或不可用，公开文章也能回源 MySQL 正常读取。
+redis:
+  # 开发环境指向本机映射端口；完整 Compose 环境里改用服务名 redis:6379。
+  addr: "127.0.0.1:6379"
+  # 密码默认为空（本地开发不设密码）；生产环境可用 REDIS_PASSWORD 覆盖。
+  password: ""
+  db: 0
+  # 各超时取短值，保证 Redis 故障时请求能快速降级回源 MySQL。
+  dial_timeout: 1s
+  read_timeout: 500ms
+  write_timeout: 500ms
+
 auth:
   # 签发与验证 Access JWT 的 HMAC 密钥。
   # 只能由 JWT_SECRET 环境变量提供；本地可用 `openssl rand -hex 32` 生成。

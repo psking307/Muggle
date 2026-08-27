@@ -5,7 +5,7 @@ GO ?= /usr/local/go/bin/go
 SWAG ?= $(shell $(GO) env GOPATH)/bin/swag
 
 dev-infra:
-	$(COMPOSE) --profile dev up -d mysql
+	$(COMPOSE) --profile dev up -d mysql redis
 
 dev-api:
 	@set -a; [ ! -f .env ] || . ./.env; set +a; $(MAKE) -C backend dev
@@ -47,7 +47,7 @@ test:
 	npm --prefix frontend run test
 
 test-integration:
-	@set -a; . ./.env; set +a; cd backend && MYSQL_TEST_DSN="$${MYSQL_USER}:$${MYSQL_PASSWORD}@tcp($${MYSQL_HOST}:$${MYSQL_PORT})/$${MYSQL_DATABASE}?charset=utf8mb4&parseTime=true&loc=UTC" $(GO) test -tags=integration ./internal/post ./internal/admin -v
+	@set -a; . ./.env; set +a; cd backend && MYSQL_TEST_DSN="$${MYSQL_USER}:$${MYSQL_PASSWORD}@tcp($${MYSQL_HOST}:$${MYSQL_PORT})/$${MYSQL_DATABASE}?charset=utf8mb4&parseTime=true&loc=UTC" REDIS_TEST_ADDR="$${REDIS_ADDR}" $(GO) test -tags=integration ./internal/post ./internal/admin -v
 
 build:
 	$(MAKE) -C backend build

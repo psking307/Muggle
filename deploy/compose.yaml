@@ -1,0 +1,63 @@
+name: muggle
+
+services:
+  mysql:
+    # 使用 MySQL 8 的长期支持版本，避免 latest 自动跨大版本升级。
+    image: mysql:8.4
+    profiles: ["dev", "tools"]
+    environment:
+      # root 账号只用于初始化和运维；API 使用下面权限更小的 blog 账号。
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      # 项目统一保存 UTC 时间，展示时再由前端转成本地时间。
+      TZ: UTC
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+    ports:
+      # 只允许本机访问，不把数据库端口暴露到局域网。
+      - target: 3306
+        # 宿主机端口与容器端口一致，使用 MySQL 标准端口 3306。
+        published: "3306"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    volumes:
+      # 容器删除或重建后，数据库文件仍保存在 named volume 中。
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      # 双美元符号表示变量由容器内 Shell 展开，而不是由 Compose 提前展开。
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent",
+        ]
+      interval: 5s
+      timeout: 3s
+      # 第一次创建 named volume 时，MySQL 还要初始化系统表、创建数据库和业务账号。
+      # 在资源较紧张的 Docker Desktop/WSL 环境里，这一步可能超过两分钟；
+      # start_period 内的失败不会消耗重试次数，避免数据库即将就绪时被 Compose 误判失败。
+      retries: 30
+      start_period: 60s
+
+  migrate:
+    # 迁移工具只在 make migrate-* 时临时运行，不会常驻。
+    image: migrate/migrate:v4.19.1
+    profiles: ["tools"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      # 迁移 SQL 以只读方式挂进工具容器，防止工具意外修改源码。
+      - ../backend/migrations:/migrations:ro
+    entrypoint:
+      - migrate
+      - -path=/migrations
+      - -database
+      - mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE}?multiStatements=true
+
+volumes:
+  # Compose 管理的持久化 MySQL 数据卷。
+  mysql_data:
